@@ -39,7 +39,10 @@ export const env = {
     'DATABASE_URL',
     'postgresql://anybid:anybid@localhost:5432/anybid?schema=public',
   ),
-  port: Number(process.env.API_PORT ?? 4000),
+  // Railway, Render and Heroku inject PORT and route to whatever the process
+  // binds. Honouring it first means the container works on those platforms
+  // unchanged; API_PORT stays for local runs where several services coexist.
+  port: Number(process.env.PORT ?? process.env.API_PORT ?? 4000),
   host: process.env.API_HOST ?? '0.0.0.0',
   jwtSecret: required(
     'JWT_SECRET',

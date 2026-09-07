@@ -174,33 +174,63 @@ WebSocket hub holding connections open for live bidding, and a settlement loop
 on an interval. Serverless has neither.
 
 `apps/api/Dockerfile` builds it from the repository root, because the service
-depends on the `@anybid/shared` workspace. The same image runs on Fly.io,
-Railway, Render or any container host:
+depends on the `@anybid/shared` workspace. The image is generic — it runs on
+Railway, Render, Fly.io or any container host:
 
 ```bash
 docker build -f apps/api/Dockerfile -t anybid-api .
 ```
 
-`fly.toml` is a worked example:
+#### Railway
+
+Two services from the same repository, plus a Postgres database.
 
 ```bash
-fly launch --no-deploy --copy-config
-fly postgres create --name anybid-db && fly postgres attach anybid-db
-fly secrets set JWT_SECRET="$(openssl rand -base64 48)" CORS_ORIGINS="https://anybid.my"
-fly deploy
+railway login
+railway init                      # creates the project
+railway add --database postgres   # provisions Postgres and sets DATABASE_URL
 ```
 
-Then point the website at it — `NEXT_PUBLIC_API_URL=https://anybid-api.fly.dev`
-and `NEXT_PUBLIC_WS_URL=wss://anybid-api.fly.dev/realtime` in Vercel.
+**Service 1 — `anybid-api`.** Config-as-code path `railway.json`. Railway
+injects `PORT`; the API honours it. Variables to set:
+
+| Variable | Value |
+|---|---|
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` — a reference, not a literal |
+| `JWT_SECRET` | 32+ characters. `openssl rand -base64 48` |
+| `CORS_ORIGINS` | `https://anybid.my` — the website's origin, not `*` |
+| `SETTLEMENT_TICK_MS` | `0`, so API replicas never race to settle |
+| `NODE_ENV` | `production` |
+
+Then generate a public domain for it (Settings → Networking → Generate Domain).
+
+**Service 2 — `anybid-worker`.** Same repository, config-as-code path
+`railway.worker.json`. It needs `DATABASE_URL` and `JWT_SECRET`; it serves no
+HTTP, so it gets no domain and no healthcheck. It overrides
+`SETTLEMENT_TICK_MS=0` internally — settling is its only job.
+
+`railway.json` carries `preDeployCommand`, so `prisma migrate deploy` runs once
+per release before the new container takes traffic. The worker config
+deliberately has no pre-deploy command: two services racing to migrate is a
+problem, one migrating is not.
+
+Seed the demo data once, if wanted:
+
+```bash
+railway run --service anybid-api node apps/api/dist/prisma/seed.js
+```
+
+Finally point the website at it — `NEXT_PUBLIC_API_URL=https://<service>.up.railway.app`
+and `NEXT_PUBLIC_WS_URL=wss://<service>.up.railway.app/realtime` in Vercel.
 
 #### Exactly one process settles auctions
 
 The deployment runs two processes from one image:
 
-| Process | Command | Role |
+| Service | Command | Role |
 |---|---|---|
-| `app` | `node apps/api/dist/src/server.js` | HTTP + the bidding WebSocket |
-| `worker` | `node apps/api/dist/src/workers/settlement-worker.js` | Closes auctions, creates orders, sends ending-soon alerts |
+| `anybid-api` | `node apps/api/dist/src/server.js` | HTTP + the bidding WebSocket |
+| `anybid-worker` | `node apps/api/dist/src/workers/settlement-worker.js` | Closes auctions, creates orders, sends ending-soon alerts |
 
 `SETTLEMENT_TICK_MS=0` is set process-wide so **API instances do not settle**,
 which is what lets them scale horizontally without racing to close the same
@@ -213,10 +243,10 @@ harmless rather than catastrophic, but it would still waste work.
 #### Migrations
 
 `prisma/migrations/0_init` is the baseline, generated from the schema and
-verified to reproduce it with no drift. Fly's `release_command` runs
-`prisma migrate deploy` once per release, before any instance starts, so a
-deploy never serves traffic against an out-of-date schema. On a host without a
-release phase, run it as a pre-start step.
+verified to reproduce it with no drift. Railway's `preDeployCommand` runs
+`prisma migrate deploy` once per release, before the new container takes
+traffic, so a deploy never serves against an out-of-date schema. On a host
+without a pre-deploy phase, run it as a pre-start step.
 
 Do **not** use `prisma db push` against production — it is a development
 convenience that can drop columns to match the schema.
@@ -225,10 +255,11 @@ convenience that can drop columns to match the schema.
 
 | Variable | Notes |
 |---|---|
-| `DATABASE_URL` | PostgreSQL 14+. Attached automatically by `fly postgres attach` |
+| `DATABASE_URL` | PostgreSQL 14+. On Railway, reference it as `${{Postgres.DATABASE_URL}}` |
 | `JWT_SECRET` | At least 32 characters; startup refuses to boot without it in production |
 | `CORS_ORIGINS` | Comma-separated. Set to the website's origin, not `*` |
 | `SETTLEMENT_TICK_MS` | `0` on API instances; the worker overrides it |
+| `PORT` | Injected by Railway and honoured by the API. Set `API_PORT` only for local runs |
 
 ### Everything else
 
