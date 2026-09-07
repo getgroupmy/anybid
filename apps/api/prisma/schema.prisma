@@ -1,0 +1,800 @@
+// AnyBid — bidding-first marketplace
+// Money is stored as Int in minor units (sen). Never Float.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/* ------------------------------------------------------------------ */
+/* Identity                                                            */
+/* ------------------------------------------------------------------ */
+
+enum Role {
+  USER
+  ADVERTISER
+  CORPORATE
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum KycStatus {
+  NONE
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum AccountType {
+  PERSONAL
+  BUSINESS
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String      @unique
+  passwordHash String
+  displayName  String
+  handle       String      @unique
+  phone        String?
+  avatarUrl    String?
+  bio          String?
+  city         String?
+  state        String?
+  country      String      @default("MY")
+  accountType  AccountType @default(PERSONAL)
+  roles        Role[]      @default([USER])
+
+  verified   Boolean   @default(false)
+  kycStatus  KycStatus @default(NONE)
+  suspended  Boolean   @default(false)
+  suspendedReason String?
+  suspendedUntil  DateTime?
+
+  /** wallet / store credit in minor units */
+  balance    Int @default(0)
+  ratingSum   Int @default(0)
+  ratingCount Int @default(0)
+
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  listings          Listing[]          @relation("SellerListings")
+  bids              Bid[]
+  watchlist         Watchlist[]
+  purchases         Order[]            @relation("BuyerOrders")
+  sales             Order[]            @relation("SellerOrders")
+  notifications     Notification[]
+  sessions          Session[]
+  reviewsWritten    Review[]           @relation("ReviewAuthor")
+  reviewsReceived   Review[]           @relation("ReviewSubject")
+  orgMembership     OrgMember?
+  advertiser        Advertiser?
+  auditEntries      AuditLog[]         @relation("AuditActor")
+  kycSubmissions    KycSubmission[]
+  approvalsRequested ApprovalRequest[] @relation("ApprovalRequester")
+  approvalsDecided   ApprovalRequest[] @relation("ApprovalDecider")
+  disputesOpened     Dispute[]         @relation("DisputeOpener")
+
+  @@index([handle])
+  @@index([createdAt])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshHash  String   @unique
+  userAgent    String?
+  ip           String?
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+}
+
+model KycSubmission {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  docType    String
+  docNumber  String
+  docFrontUrl String
+  docBackUrl  String?
+  selfieUrl   String?
+  status     KycStatus @default(PENDING)
+  note       String?
+  reviewedBy String?
+  reviewedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([status])
+}
+
+/* ------------------------------------------------------------------ */
+/* Catalogue                                                           */
+/* ------------------------------------------------------------------ */
+
+model Category {
+  id       String     @id @default(cuid())
+  name     String
+  slug     String     @unique
+  icon     String?
+  position Int        @default(0)
+  parentId String?
+  parent   Category?  @relation("CategoryTree", fields: [parentId], references: [id])
+  children Category[] @relation("CategoryTree")
+  listings Listing[]
+  campaignTargets CampaignCategory[]
+  rfqs     Rfq[]
+
+  @@index([parentId])
+}
+
+enum ListingKind {
+  AUCTION
+  BUY_NOW
+  AUCTION_WITH_BUY_NOW
+}
+
+enum ListingStatus {
+  DRAFT
+  PENDING_REVIEW
+  SCHEDULED
+  LIVE
+  ENDED
+  SOLD
+  UNSOLD
+  CANCELLED
+  SUSPENDED
+}
+
+enum ItemCondition {
+  NEW
+  LIKE_NEW
+  GOOD
+  FAIR
+  FOR_PARTS
+  REFURBISHED
+}
+
+model Listing {
+  id          String        @id @default(cuid())
+  slug        String        @unique
+  title       String
+  description String
+  kind        ListingKind   @default(AUCTION)
+  status      ListingStatus @default(DRAFT)
+  condition   ItemCondition @default(GOOD)
+  currency    String        @default("MYR")
+
+  sellerId   String
+  seller     User     @relation("SellerListings", fields: [sellerId], references: [id])
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+  /** corporate listing — sold by an organisation rather than an individual */
+  orgId      String?
+  org        Organization? @relation(fields: [orgId], references: [id])
+
+  images   String[]
+  tags     String[]
+  quantity Int      @default(1)
+
+  /* pricing — all minor units */
+  startPrice    Int
+  currentPrice  Int
+  reservePrice  Int?
+  buyNowPrice   Int?
+  bidIncrement  Int?
+  shippingCost  Int  @default(0)
+  localPickup   Boolean @default(true)
+
+  /* auction mechanics */
+  startsAt              DateTime  @default(now())
+  endsAt                DateTime?
+  originalEndsAt        DateTime?
+  antiSnipeWindowSec    Int       @default(120)
+  antiSnipeExtensionSec Int       @default(120)
+  maxExtensionSec       Int?      @default(1800)
+
+  /* denormalised leader state — the single row the bid transaction locks */
+  leaderId     String?
+  leaderMax    Int      @default(0)
+  bidCount     Int      @default(0)
+  watchCount   Int      @default(0)
+  viewCount    Int      @default(0)
+  reserveMet   Boolean  @default(false)
+
+  featured     Boolean   @default(false)
+  featuredUntil DateTime?
+  locationCity  String?
+  locationState String?
+
+  moderationNote String?
+  closedAt       DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  bids      Bid[]
+  watchers  Watchlist[]
+  orders    Order[]
+  creatives AdCreative[]
+  approvals ApprovalRequest[]
+
+  @@index([status, endsAt])
+  @@index([categoryId, status])
+  @@index([sellerId, status])
+  @@index([featured, status])
+  @@index([createdAt])
+}
+
+enum BidStatus {
+  ACTIVE
+  OUTBID
+  WON
+  LOST
+  RETRACTED
+  PENDING_APPROVAL
+}
+
+model Bid {
+  id        String    @id @default(cuid())
+  listingId String
+  listing   Listing   @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  bidderId  String
+  bidder    User      @relation(fields: [bidderId], references: [id])
+  orgId     String?
+  org       Organization? @relation(fields: [orgId], references: [id])
+
+  /** the bidder's hidden proxy maximum */
+  maxAmount Int
+  /** the visible price this bid produced */
+  amount    Int
+  status    BidStatus @default(ACTIVE)
+  /** true when the price move came from the proxy engine, not a manual bid */
+  isAuto    Boolean   @default(false)
+  reference String?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  @@index([listingId, createdAt])
+  @@index([bidderId, createdAt])
+  @@index([listingId, maxAmount])
+}
+
+model Watchlist {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing  @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([userId, listingId])
+  @@index([userId])
+}
+
+/* ------------------------------------------------------------------ */
+/* Commerce                                                            */
+/* ------------------------------------------------------------------ */
+
+enum OrderStatus {
+  AWAITING_PAYMENT
+  PAID
+  AWAITING_SHIPMENT
+  SHIPPED
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+  DISPUTED
+}
+
+enum PaymentMethod {
+  FPX
+  CARD
+  EWALLET
+  BANK_TRANSFER
+  CORPORATE_INVOICE
+}
+
+model Order {
+  id        String      @id @default(cuid())
+  reference String      @unique
+  status    OrderStatus @default(AWAITING_PAYMENT)
+
+  listingId String
+  listing   Listing @relation(fields: [listingId], references: [id])
+  buyerId   String
+  buyer     User    @relation("BuyerOrders", fields: [buyerId], references: [id])
+  sellerId  String
+  seller    User    @relation("SellerOrders", fields: [sellerId], references: [id])
+  orgId     String?
+  org       Organization? @relation(fields: [orgId], references: [id])
+
+  quantity      Int    @default(1)
+  hammerPrice   Int
+  buyerPremium  Int    @default(0)
+  shippingCost  Int    @default(0)
+  total         Int
+  sellerPayout  Int
+  platformFee   Int
+  paymentFee    Int    @default(0)
+  currency      String @default("MYR")
+
+  paymentMethod PaymentMethod?
+  paymentRef    String?
+  paidAt        DateTime?
+  dueAt         DateTime?
+
+  shippingName   String?
+  shippingPhone  String?
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  postcode       String?
+  country        String? @default("MY")
+  notes          String?
+
+  courier        String?
+  trackingNumber String?
+  shippedAt      DateTime?
+  deliveredAt    DateTime?
+  completedAt    DateTime?
+  cancelledAt    DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  payments Payment[]
+  reviews  Review[]
+  dispute  Dispute?
+  invoiceLines InvoiceLine[]
+
+  @@index([buyerId, status])
+  @@index([sellerId, status])
+  @@index([status, createdAt])
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REFUNDED
+}
+
+model Payment {
+  id        String        @id @default(cuid())
+  orderId   String
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  amount    Int
+  currency  String        @default("MYR")
+  method    PaymentMethod
+  status    PaymentStatus @default(PENDING)
+  provider  String        @default("mock")
+  providerRef String?
+  failureReason String?
+  createdAt DateTime      @default(now())
+  settledAt DateTime?
+
+  @@index([orderId])
+}
+
+model Review {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User     @relation("ReviewAuthor", fields: [authorId], references: [id])
+  subjectId String
+  subject   User     @relation("ReviewSubject", fields: [subjectId], references: [id])
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([orderId, authorId])
+  @@index([subjectId])
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  REJECTED
+}
+
+model Dispute {
+  id        String        @id @default(cuid())
+  orderId   String        @unique
+  order     Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  openedById String
+  openedBy   User         @relation("DisputeOpener", fields: [openedById], references: [id])
+  reason    String
+  detail    String
+  status    DisputeStatus @default(OPEN)
+  resolution String?
+  refundAmount Int?
+  resolvedById String?
+  resolvedAt   DateTime?
+  createdAt DateTime      @default(now())
+
+  @@index([status])
+}
+
+/* ------------------------------------------------------------------ */
+/* Advertiser                                                          */
+/* ------------------------------------------------------------------ */
+
+model Advertiser {
+  id          String   @id @default(cuid())
+  userId      String   @unique
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  companyName String
+  website     String?
+  contactEmail String
+  /** prepaid ad wallet, minor units */
+  balance     Int      @default(0)
+  lifetimeSpend Int    @default(0)
+  approved    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  campaigns    AdCampaign[]
+  transactions AdWalletTx[]
+}
+
+enum CampaignStatus {
+  DRAFT
+  PENDING_REVIEW
+  ACTIVE
+  PAUSED
+  ENDED
+  REJECTED
+  OUT_OF_BUDGET
+}
+
+enum PricingModel {
+  CPC
+  CPM
+}
+
+enum AdPlacement {
+  HOME_HERO
+  HOME_FEED
+  SEARCH_INLINE
+  LISTING_SIDEBAR
+  MOBILE_FEED
+  CATEGORY_BANNER
+}
+
+model AdCampaign {
+  id           String         @id @default(cuid())
+  advertiserId String
+  advertiser   Advertiser     @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  name         String
+  objective    String         @default("TRAFFIC")
+  status       CampaignStatus @default(DRAFT)
+  pricingModel PricingModel   @default(CPC)
+  /** advertiser's bid per click (CPC) or per 1000 impressions (CPM), minor units */
+  bidAmount    Int
+  dailyBudget  Int
+  totalBudget  Int?
+  spend        Int            @default(0)
+  impressions  Int            @default(0)
+  clicks       Int            @default(0)
+
+  startsAt   DateTime
+  endsAt     DateTime?
+  placements AdPlacement[]
+  targetKeywords String[]
+  targetStates   String[]
+  reviewNote String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  creatives  AdCreative[]
+  categories CampaignCategory[]
+  daily      AdDailyStat[]
+  events     AdEvent[]
+
+  @@index([status, startsAt])
+}
+
+model CampaignCategory {
+  campaignId String
+  campaign   AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   Category   @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+
+  @@id([campaignId, categoryId])
+}
+
+model AdCreative {
+  id         String     @id @default(cuid())
+  campaignId String
+  campaign   AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  headline   String
+  body       String?
+  imageUrl   String
+  ctaLabel   String     @default("Learn more")
+  ctaUrl     String
+  listingId  String?
+  listing    Listing?   @relation(fields: [listingId], references: [id])
+  status     String     @default("ACTIVE")
+  impressions Int       @default(0)
+  clicks      Int       @default(0)
+  createdAt  DateTime   @default(now())
+
+  events AdEvent[]
+
+  @@index([campaignId])
+}
+
+model AdEvent {
+  id         String     @id @default(cuid())
+  campaignId String
+  campaign   AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  creativeId String
+  creative   AdCreative @relation(fields: [creativeId], references: [id], onDelete: Cascade)
+  /** IMPRESSION | CLICK */
+  type       String
+  placement  AdPlacement
+  /** what this event charged the advertiser, minor units */
+  cost       Int         @default(0)
+  userId     String?
+  slotId     String      @unique
+  createdAt  DateTime    @default(now())
+
+  @@index([campaignId, createdAt])
+  @@index([type, createdAt])
+}
+
+model AdDailyStat {
+  id          String     @id @default(cuid())
+  campaignId  String
+  campaign    AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  date        DateTime   @db.Date
+  impressions Int        @default(0)
+  clicks      Int        @default(0)
+  spend       Int        @default(0)
+
+  @@unique([campaignId, date])
+  @@index([date])
+}
+
+model AdWalletTx {
+  id           String     @id @default(cuid())
+  advertiserId String
+  advertiser   Advertiser @relation(fields: [advertiserId], references: [id], onDelete: Cascade)
+  /** TOP_UP | SPEND | REFUND | ADJUSTMENT */
+  type        String
+  amount      Int
+  balanceAfter Int
+  note        String?
+  createdAt   DateTime   @default(now())
+
+  @@index([advertiserId, createdAt])
+}
+
+/* ------------------------------------------------------------------ */
+/* Corporate                                                           */
+/* ------------------------------------------------------------------ */
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  APPROVER
+  BUYER
+  VIEWER
+}
+
+enum PaymentTerms {
+  PREPAID
+  NET_7
+  NET_14
+  NET_30
+  NET_60
+}
+
+model Organization {
+  id             String  @id @default(cuid())
+  name           String
+  slug           String  @unique
+  registrationNo String  @unique
+  taxId          String?
+  industry       String?
+  billingEmail   String
+  addressLine1   String?
+  city           String?
+  state          String?
+  postcode       String?
+  country        String  @default("MY")
+  logoUrl        String?
+
+  monthlyBudget             Int          @default(0)
+  defaultApprovalThreshold  Int          @default(0)
+  creditLimit               Int          @default(0)
+  outstanding               Int          @default(0)
+  paymentTerms              PaymentTerms @default(PREPAID)
+  verified                  Boolean      @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members   OrgMember[]
+  bids      Bid[]
+  orders    Order[]
+  listings  Listing[]
+  approvals ApprovalRequest[]
+  invoices  Invoice[]
+  rfqs      Rfq[]
+}
+
+model OrgMember {
+  id     String       @id @default(cuid())
+  orgId  String
+  org    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  userId String       @unique
+  user   User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  orgRole           OrgRole @default(BUYER)
+  /** null falls back to the organisation default */
+  approvalThreshold Int?
+  spentThisMonth    Int     @default(0)
+  active            Boolean @default(true)
+  joinedAt          DateTime @default(now())
+
+  @@index([orgId])
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+/**
+ * A corporate bid above the member's threshold is held here until an approver
+ * releases it. On approval the bid is placed against the live auction.
+ */
+model ApprovalRequest {
+  id        String         @id @default(cuid())
+  orgId     String
+  org       Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  listingId String
+  listing   Listing        @relation(fields: [listingId], references: [id], onDelete: Cascade)
+  requestedById String
+  requestedBy   User       @relation("ApprovalRequester", fields: [requestedById], references: [id])
+  decidedById   String?
+  decidedBy     User?      @relation("ApprovalDecider", fields: [decidedById], references: [id])
+
+  amount    Int
+  reference String?
+  status    ApprovalStatus @default(PENDING)
+  note      String?
+  expiresAt DateTime
+  decidedAt DateTime?
+  createdAt DateTime       @default(now())
+
+  @@index([orgId, status])
+}
+
+model Invoice {
+  id        String       @id @default(cuid())
+  orgId     String
+  org       Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  number    String       @unique
+  periodStart DateTime
+  periodEnd   DateTime
+  subtotal  Int
+  tax       Int          @default(0)
+  total     Int
+  /** DRAFT | ISSUED | PAID | OVERDUE | VOID */
+  status    String       @default("ISSUED")
+  dueAt     DateTime
+  paidAt    DateTime?
+  createdAt DateTime     @default(now())
+
+  lines InvoiceLine[]
+
+  @@index([orgId, status])
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  orderId     String?
+  order       Order?  @relation(fields: [orderId], references: [id])
+  description String
+  quantity    Int     @default(1)
+  unitAmount  Int
+  amount      Int
+
+  @@index([invoiceId])
+}
+
+/** Corporate request-for-quote: reverse auction where suppliers bid down. */
+model Rfq {
+  id          String   @id @default(cuid())
+  orgId       String
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  categoryId  String
+  category    Category @relation(fields: [categoryId], references: [id])
+  title       String
+  description String
+  quantity    Int
+  targetUnitPrice Int?
+  deliveryState   String?
+  /** OPEN | CLOSED | AWARDED | CANCELLED */
+  status      String   @default("OPEN")
+  closesAt    DateTime
+  awardedQuoteId String?
+  createdAt   DateTime @default(now())
+
+  quotes RfqQuote[]
+
+  @@index([orgId, status])
+}
+
+model RfqQuote {
+  id        String   @id @default(cuid())
+  rfqId     String
+  rfq       Rfq      @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  supplierId String
+  unitPrice Int
+  leadTimeDays Int
+  note      String?
+  createdAt DateTime @default(now())
+
+  @@index([rfqId, unitPrice])
+}
+
+/* ------------------------------------------------------------------ */
+/* Platform                                                            */
+/* ------------------------------------------------------------------ */
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  title     String
+  body      String
+  link      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id])
+  action     String
+  targetType String
+  targetId   String
+  meta       Json?
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([targetType, targetId])
+}
+
+/** Single-row key/value store for runtime-tunable platform settings. */
+model PlatformSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
