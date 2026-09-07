@@ -17,3 +17,15 @@ apps/api/uploads/
 .turbo/
 android/
 ios/
+
+# Ruflo local secrets and runtime data
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Ruflo runtime state (local databases, not source)
+.swarm/
+ruvector.db
+ruvector.db-*
+agentdb.rvf
+agentdb.rvf.lock

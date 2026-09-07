@@ -3,8 +3,15 @@
   "private": true,
   "version": "0.1.0",
   "description": "AnyBid — bidding-first marketplace (API, web, Expo mobile for iOS/Android/Huawei)",
-  "workspaces": ["packages/*", "apps/api", "apps/web", "apps/mobile"],
-  "engines": { "node": ">=20.18" },
+  "workspaces": [
+    "packages/*",
+    "apps/api",
+    "apps/web",
+    "apps/mobile"
+  ],
+  "engines": {
+    "node": ">=20.18"
+  },
   "scripts": {
     "build": "npm run build -w @anybid/shared && npm run build -w @anybid/api && npm run build -w @anybid/web",
     "typecheck": "npm run typecheck --workspaces --if-present",
@@ -23,6 +30,7 @@
   },
   "devDependencies": {
     "concurrently": "^9.1.2",
+    "ruflo": "^3.38.21",
     "typescript": "5.9.3"
   }
 }
