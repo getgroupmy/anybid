@@ -2,7 +2,7 @@
   "name": "anybid",
   "private": true,
   "version": "0.1.0",
-  "description": "AnyBid — bidding-first marketplace (API, web, Expo mobile for iOS/Android/Huawei)",
+  "description": "AnyBid \u2014 bidding-first marketplace (API, web, Expo mobile for iOS/Android/Huawei)",
   "workspaces": [
     "packages/*",
     "apps/api",
@@ -22,6 +22,7 @@
     "db:migrate": "npm run db:migrate -w @anybid/api",
     "db:seed": "npm run db:seed -w @anybid/api",
     "db:reset": "npm run db:reset -w @anybid/api",
+    "smoke": "npm run db:seed && tsx apps/api/scripts/smoke.ts",
     "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
     "dev:api": "npm run dev -w @anybid/api",
     "dev:web": "npm run dev -w @anybid/web",

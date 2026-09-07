@@ -52,10 +52,15 @@ No Docker? Any PostgreSQL 14+ works; point `DATABASE_URL` at it and skip
 ## Verifying it works
 
 ```bash
-npm test                                       # 29 engine unit tests
-npx tsx apps/api/scripts/smoke.ts              # 53 end-to-end assertions
-npm run typecheck                              # all four packages
+npm test                # 29 engine unit tests
+npm run smoke           # reseeds, then runs 53 end-to-end assertions (API must be running)
+npm run typecheck       # all four packages
 ```
+
+`npm run smoke` reseeds first on purpose: it places real bids, buys the
+fixed-price listing and spends approval requests, so it needs a clean database.
+Running the script directly twice over without reseeding will fail on the state
+the first run left behind.
 
 The smoke test exercises the real paths against a running API: proxy bidding
 and outbidding, anti-snipe extension, reserve behaviour, buy-now through to

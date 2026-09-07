@@ -1,8 +1,13 @@
 /**
- * End-to-end smoke test against a running API and a seeded database.
+ * End-to-end smoke test against a running API.
  *
- *   npm run dev -w @anybid/api      # terminal 1
- *   npx tsx apps/api/scripts/smoke.ts
+ *   npm run dev:api    # terminal 1
+ *   npm run smoke      # terminal 2 — reseeds, then runs
+ *
+ * It places real bids, buys the fixed-price listing and spends approval
+ * requests, so it expects a FRESHLY SEEDED database. Running it twice without
+ * reseeding fails on the state the first run left behind — that is the test
+ * being honest, not a defect. `npm run smoke` reseeds for you.
  *
  * Exercises the paths that matter: auth, browsing, proxy bidding, outbidding,
  * anti-snipe, buy-now, corporate approval, the ad auction and admin metrics.
