@@ -23,6 +23,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   orientation: 'portrait',
   scheme: 'anybid',
   userInterfaceStyle: 'light',
+  // iOS, Android and Huawei only — the web surface is apps/web (Next.js), so
+  // Expo must not try to bundle for web (it would need react-native-web).
+  platforms: ['ios', 'android'],
   newArchEnabled: true,
   primaryColor: '#ef3307',
 
@@ -55,8 +58,6 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Play location, so the same bundle runs on a Huawei device.
     blockedPermissions: ['com.google.android.gms.permission.AD_ID'],
   },
-
-  web: { bundler: 'metro', output: 'single' },
 
   plugins: [
     'expo-router',

@@ -22,8 +22,12 @@ jobs:
 
       # Bundling both channels catches an import that only one variant links —
       # the Huawei build must not pull in anything needing Google Play Services.
-      - name: Bundle (Play/App Store channel)
-        run: npx expo export --platform all --output-dir /tmp/export-google
+      - name: Bundle (Play Store channel)
+        run: npx expo export --platform android --output-dir /tmp/export-android
+        working-directory: apps/mobile
+
+      - name: Bundle (App Store channel)
+        run: npx expo export --platform ios --output-dir /tmp/export-ios
         working-directory: apps/mobile
 
       - name: Bundle (Huawei channel)
