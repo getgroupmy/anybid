@@ -259,6 +259,24 @@ consoles (User, Admin, Advertiser, Corporate) share one account model.
 - Web browser code never holds an access token — it goes through
   `/api/proxy/*`, which attaches it server-side.
 
+## Shipping policy
+
+The repository owner has standing authorization for this, given 2026-09-07.
+Do not stop to ask for it again:
+
+- **Merge your own PR once CI is green.** Both workflows passing and no merge
+  conflict is the bar. Merge it, do not wait to be told.
+- **Deploying is automatic.** A push to `main` triggers Vercel's production
+  deploy for the website. Merging is the deploy.
+- **Never merge red.** A failing check is work to do, not a hurdle to route
+  around. The same goes for a merge conflict.
+- **This covers your own PRs only.** A PR opened by someone else is theirs to
+  merge.
+
+Enabling *Settings → General → Pull Requests → Allow auto-merge* would let
+GitHub do the merge itself the moment checks pass, rather than depending on a
+session being awake to notice. It is off at the time of writing.
+
 ## Verifying a change
 
 ```bash
