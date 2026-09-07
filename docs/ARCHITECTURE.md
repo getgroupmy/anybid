@@ -113,10 +113,20 @@ destination — the client is never trusted to create billing events.
 
 ### Website → Vercel
 
-`vercel.json` at the repository root configures the monorepo deploy: install at
-the root so npm workspaces resolve, build only `@anybid/web`, and serve
-`apps/web/.next`. `.vercelignore` keeps `apps/api` and `apps/mobile` out of the
-upload.
+**Set the project's Root Directory to `apps/web`.** That is the supported
+configuration: Vercel then detects Next.js on its own, installs from the
+repository root because npm workspaces are declared there, and resolves
+`@anybid/shared` through the workspace symlink. Keep "Include source files
+outside of the Root Directory" enabled — the site imports `packages/shared`.
+
+The root `vercel.json` is a fallback for when Root Directory is *not* set: it
+builds only `@anybid/web` and serves `apps/web/.next`, so a root-level deploy
+still produces the site. Vercel reads `vercel.json` from the Root Directory, so
+once that is `apps/web` the root file is simply not read and can be deleted.
+
+`.vercelignore` keeps `apps/api` and `apps/mobile` out of the upload. Excluding
+those workspace directories is safe — npm tolerates a declared workspace whose
+directory is absent.
 
 Two environment variables must be set in the Vercel project, or the deployed
 site will point at `localhost` and fail to load anything:
