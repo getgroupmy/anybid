@@ -4,12 +4,29 @@ import { encodeSession } from '@/lib/session';
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
-  const upstream = await fetch(`${API_URL}/v1/auth/login`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body,
-    cache: 'no-store',
-  });
+
+  let upstream: Response;
+  try {
+    upstream = await fetch(`${API_URL}/v1/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body,
+      cache: 'no-store',
+    });
+  } catch (error) {
+    // The marketplace service is unreachable from the server. This is ours,
+    // not the visitor's network, and saying so saves them debugging their wifi.
+    console.error('[anybid] auth upstream unreachable:', error);
+    return NextResponse.json(
+      {
+        error: 'SERVICE_UNAVAILABLE',
+        message:
+          'Sign-in is temporarily unavailable — we could not reach the AnyBid service. Please try again shortly.',
+      },
+      { status: 503 },
+    );
+  }
+
   const data = await upstream.json();
 
   if (!upstream.ok) return NextResponse.json(data, { status: upstream.status });
