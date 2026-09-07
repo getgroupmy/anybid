@@ -139,22 +139,24 @@ site will point at `localhost` and fail to load anything:
 Vercel Analytics is already mounted in the root layout and needs no
 configuration — enable Analytics on the project and it starts collecting.
 
-#### Deploying from CI rather than from Vercel's git trigger
+#### Who deploys what
 
-`.github/workflows/deploy.yml` deploys production. It waits on the CI workflow
-and runs only for a **successful** run on `main`, checking out the exact commit
-CI verified rather than whatever `main` points at by then. It uses the Vercel
-CLI — `vercel pull` to fetch the project's settings and environment variables,
-`vercel build --prod`, then `vercel deploy --prebuilt --prod` — so the build
-that ships is the one CI validated.
+Vercel's git integration owns automatic deploys: **production on a push to
+`main`**, previews on pull requests. Merging to `main` ships to production with
+no further setup.
 
-`vercel.json` sets `git.deploymentEnabled.main = false`, so Vercel does not
-also deploy `main` itself. Pull-request previews still come from Vercel's git
-integration; only production moved to CI. Without that flag you would get two
-production deploys per push.
+`.github/workflows/deploy.yml` is a manual alternative, run from the Actions
+tab. It uses the Vercel CLI — `vercel pull`, `vercel build --prod`, then
+`vercel deploy --prebuilt --prod` — to ship a chosen commit without waiting on
+the git trigger.
 
-Three repository secrets are required (Settings → Secrets and variables →
-Actions):
+To gate production on a green CI run instead, add the `workflow_run` trigger
+noted in that file **and** set `git.deploymentEnabled.main` to `false` in
+`vercel.json`. Do both or neither: with only the first, every push to `main`
+deploys twice.
+
+The manual workflow needs three repository secrets (Settings → Secrets and
+variables → Actions):
 
 | Secret | Where to find it |
 |---|---|
@@ -162,8 +164,8 @@ Actions):
 | `VERCEL_ORG_ID` | Vercel project → Settings → General |
 | `VERCEL_PROJECT_ID` | Vercel project → Settings → General |
 
-Until they exist the job fails at `vercel pull`. `workflow_dispatch` is enabled
-so a deploy can be triggered by hand.
+Until they exist that workflow fails at `vercel pull`. Vercel's own git-driven
+production deploy needs none of them.
 
 ### The API does not belong on Vercel
 

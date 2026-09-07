@@ -6,10 +6,5 @@
   "outputDirectory": "apps/web/.next",
   "github": {
     "silent": false
-  },
-  "git": {
-    "deploymentEnabled": {
-      "main": false
-    }
   }
 }

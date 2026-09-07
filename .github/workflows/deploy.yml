@@ -1,15 +1,20 @@
 name: Deploy
 
-# Production deploys are driven from CI, not from Vercel's own git trigger:
-# a push to main runs the full CI workflow, and only a green run reaches
-# Vercel. Preview deploys for pull requests stay with Vercel's git
-# integration, which is why vercel.json disables its production deploys for
-# main rather than turning the integration off entirely.
+# Vercel's git integration owns automatic deploys: production on a push to
+# main, previews on pull requests. This workflow is the manual alternative —
+# run it from the Actions tab to ship a specific commit through the Vercel CLI
+# without waiting on the git trigger, or as the basis for gating production on
+# CI later.
+#
+# To gate production on a green CI run instead, add the workflow_run trigger
+# below and set git.deploymentEnabled.main to false in vercel.json, or the two
+# paths will both deploy:
+#
+#   workflow_run:
+#     workflows: [CI]
+#     types: [completed]
+#     branches: [main]
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -20,11 +25,6 @@ jobs:
   vercel:
     name: Deploy website to Vercel
     runs-on: ubuntu-latest
-    # A failed or cancelled CI run must never deploy.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-
     environment:
       name: production
       url: ${{ steps.deploy.outputs.url }}
