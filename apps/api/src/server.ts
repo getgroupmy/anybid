@@ -96,7 +96,7 @@ export async function buildServer() {
     return reply.code(500).send({
       statusCode: 500,
       error: 'INTERNAL',
-      message: env.isProd ? 'Something went wrong' : error.message,
+      message: env.isProd ? 'Something went wrong' : String((error as Error).message ?? error),
     });
   });
 

@@ -1,0 +1,33 @@
+name: Mobile
+
+on:
+  push:
+    branches: [main]
+    paths: ['apps/mobile/**', 'packages/shared/**']
+  pull_request:
+    paths: ['apps/mobile/**', 'packages/shared/**']
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck -w @anybid/mobile
+
+      # Bundling both channels catches an import that only one variant links —
+      # the Huawei build must not pull in anything needing Google Play Services.
+      - name: Bundle (Play/App Store channel)
+        run: npx expo export --platform all --output-dir /tmp/export-google
+        working-directory: apps/mobile
+
+      - name: Bundle (Huawei channel)
+        run: npx expo export --platform android --output-dir /tmp/export-huawei
+        working-directory: apps/mobile
+        env:
+          EXPO_PUBLIC_DIST_CHANNEL: huawei

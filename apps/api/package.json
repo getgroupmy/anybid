@@ -17,7 +17,9 @@
     "db:reset": "prisma migrate reset --force --skip-seed && tsx prisma/seed.ts",
     "worker": "tsx src/workers/settlement-worker.ts"
   },
-  "prisma": { "seed": "tsx prisma/seed.ts" },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
   "dependencies": {
     "@anybid/shared": "*",
     "@fastify/cors": "^10.0.1",
@@ -31,6 +33,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
+    "@types/ws": "^8.18.1",
     "prisma": "6.19.3",
     "tsx": "^4.19.2",
     "typescript": "5.9.3"

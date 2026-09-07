@@ -192,7 +192,8 @@ export const adPlacementSchema = z.enum([
 ]);
 export type AdPlacement = z.infer<typeof adPlacementSchema>;
 
-export const createCampaignSchema = z
+/** The campaign fields, before cross-field validation — `.partial()`-able. */
+export const campaignFieldsSchema = z
   .object({
     name: z.string().min(3).max(120),
     objective: z.enum(['TRAFFIC', 'AWARENESS', 'LISTING_PROMOTION']).default('TRAFFIC'),
@@ -208,18 +209,22 @@ export const createCampaignSchema = z
     targetKeywords: z.array(z.string().min(1).max(40)).max(50).default([]),
     targetStates: z.array(z.string().max(60)).max(20).default([]),
   })
-  .superRefine((v, ctx) => {
-    if (v.endsAt && v.endsAt <= v.startsAt) {
-      ctx.addIssue({ code: 'custom', path: ['endsAt'], message: 'End date must be after the start date' });
-    }
-    if (v.totalBudget && v.totalBudget < v.dailyBudget) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['totalBudget'],
-        message: 'Total budget cannot be below the daily budget',
-      });
-    }
-  });
+;
+
+export const createCampaignSchema = campaignFieldsSchema.superRefine((v, ctx) => {
+  if (v.endsAt && v.endsAt <= v.startsAt) {
+    ctx.addIssue({ code: 'custom', path: ['endsAt'], message: 'End date must be after the start date' });
+  }
+  if (v.totalBudget && v.totalBudget < v.dailyBudget) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['totalBudget'],
+      message: 'Total budget cannot be below the daily budget',
+    });
+  }
+});
+
+export const updateCampaignSchema = campaignFieldsSchema.partial();
 export type CreateCampaignInput = z.infer<typeof createCampaignSchema>;
 
 export const createCreativeSchema = z.object({

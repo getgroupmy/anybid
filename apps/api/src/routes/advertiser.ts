@@ -4,6 +4,7 @@ import {
   createCampaignSchema,
   createCreativeSchema,
   topUpSchema,
+  updateCampaignSchema,
 } from '@anybid/shared';
 import { prisma } from '../db.ts';
 import { requireAuth, requireRole, writeAudit } from '../lib/auth.ts';
@@ -173,7 +174,7 @@ export async function advertiserRoutes(app: FastifyInstance) {
   app.patch<{ Params: { id: string } }>('/v1/advertiser/campaigns/:id', async (req) => {
     const auth = requireRole(req, 'ADVERTISER', 'ADMIN', 'SUPER_ADMIN');
     const advertiser = await myAdvertiser(auth.id);
-    const body = parseBody(req, createCampaignSchema.partial());
+    const body = parseBody(req, updateCampaignSchema);
 
     const existing = await prisma.adCampaign.findFirst({
       where: { id: req.params.id, advertiserId: advertiser.id },

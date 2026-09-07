@@ -55,6 +55,7 @@ export interface ListingSummary {
   watchCount: number;
   endsAt: string | null;
   startsAt: string | null;
+  createdAt: string;
   reserveMet: boolean;
   hasReserve: boolean;
   featured: boolean;
@@ -86,7 +87,6 @@ export interface ListingDetail extends ListingSummary {
   antiSnipeWindowSec: number;
   antiSnipeExtensionSec: number;
   viewCount: number;
-  createdAt: string;
   bids: BidSummary[];
 }
 
@@ -279,7 +279,8 @@ export interface AuditEntry {
   createdAt: string;
 }
 
-export interface ApiError {
+/** The JSON body the API returns for a failed request. */
+export interface ApiErrorBody {
   error: string;
   message: string;
   details?: unknown;

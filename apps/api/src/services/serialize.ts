@@ -64,6 +64,7 @@ export function listingSummary(l: AnyRow, viewer?: ViewerContext): ListingSummar
     watchCount: l.watchCount,
     endsAt: l.endsAt ? toIso(l.endsAt) : null,
     startsAt: l.startsAt ? toIso(l.startsAt) : null,
+    createdAt: toIso(l.createdAt),
     reserveMet: Boolean(l.reserveMet),
     hasReserve: Boolean(l.reservePrice),
     featured: Boolean(l.featured),
@@ -105,7 +106,6 @@ export function listingDetail(l: AnyRow, viewer?: ViewerContext): ListingDetail 
     antiSnipeWindowSec: l.antiSnipeWindowSec,
     antiSnipeExtensionSec: l.antiSnipeExtensionSec,
     viewCount: l.viewCount ?? 0,
-    createdAt: toIso(l.createdAt),
     bids: (l.bids ?? []).map(bidSummary),
   };
 }
