@@ -139,6 +139,32 @@ site will point at `localhost` and fail to load anything:
 Vercel Analytics is already mounted in the root layout and needs no
 configuration — enable Analytics on the project and it starts collecting.
 
+#### Deploying from CI rather than from Vercel's git trigger
+
+`.github/workflows/deploy.yml` deploys production. It waits on the CI workflow
+and runs only for a **successful** run on `main`, checking out the exact commit
+CI verified rather than whatever `main` points at by then. It uses the Vercel
+CLI — `vercel pull` to fetch the project's settings and environment variables,
+`vercel build --prod`, then `vercel deploy --prebuilt --prod` — so the build
+that ships is the one CI validated.
+
+`vercel.json` sets `git.deploymentEnabled.main = false`, so Vercel does not
+also deploy `main` itself. Pull-request previews still come from Vercel's git
+integration; only production moved to CI. Without that flag you would get two
+production deploys per push.
+
+Three repository secrets are required (Settings → Secrets and variables →
+Actions):
+
+| Secret | Where to find it |
+|---|---|
+| `VERCEL_TOKEN` | Vercel → Account Settings → Tokens |
+| `VERCEL_ORG_ID` | Vercel project → Settings → General |
+| `VERCEL_PROJECT_ID` | Vercel project → Settings → General |
+
+Until they exist the job fails at `vercel pull`. `workflow_dispatch` is enabled
+so a deploy can be triggered by hand.
+
 ### The API does not belong on Vercel
 
 It is a long-lived Fastify process: a WebSocket hub holding open connections

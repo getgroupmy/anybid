@@ -101,6 +101,12 @@ fallback that makes a root-level deploy work too. Set `NEXT_PUBLIC_API_URL` and
 `NEXT_PUBLIC_WS_URL` in the project or the deployed site will point at
 `localhost`.
 
+Production deploys run from CI: `.github/workflows/deploy.yml` waits for a
+green CI run on `main` and then pushes to Vercel with the Vercel CLI, so only
+verified commits ship. It needs `VERCEL_TOKEN`, `VERCEL_ORG_ID` and
+`VERCEL_PROJECT_ID` as repository secrets. PR previews still come from Vercel's
+git integration.
+
 The API is **not** a Vercel workload: it holds WebSocket connections open for
 live bidding and runs a settlement loop on an interval, so it needs a host that
 runs a persistent process (Railway, Fly.io, Render, a container). Details in

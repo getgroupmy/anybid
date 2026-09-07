@@ -1,0 +1,71 @@
+name: Deploy
+
+# Production deploys are driven from CI, not from Vercel's own git trigger:
+# a push to main runs the full CI workflow, and only a green run reaches
+# Vercel. Preview deploys for pull requests stay with Vercel's git
+# integration, which is why vercel.json disables its production deploys for
+# main rather than turning the integration off entirely.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  vercel:
+    name: Deploy website to Vercel
+    runs-on: ubuntu-latest
+    # A failed or cancelled CI run must never deploy.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    env:
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Deploy the exact commit CI verified, not whatever main points at now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Vercel CLI
+        run: npm install -g vercel@latest
+
+      # Pulls the project's settings and environment variables, so the build
+      # here matches the one Vercel would run itself.
+      - name: Pull Vercel project settings
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Build
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+
+      - name: Deploy
+        id: deploy
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "Deployed to $url" >> "$GITHUB_STEP_SUMMARY"
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
