@@ -17,7 +17,9 @@
     "db:reset": "prisma migrate reset --force --skip-seed && tsx prisma/seed.ts",
     "worker": "tsx src/workers/settlement-worker.ts",
     "start:worker": "node dist/src/workers/settlement-worker.js",
-    "predev": "npm run build -w @anybid/shared"
+    "predev": "npm run build -w @anybid/shared",
+    "pretypecheck": "npm run build -w @anybid/shared",
+    "predb:seed": "npm run build -w @anybid/shared"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

@@ -40,6 +40,11 @@ jobs:
       - name: Generate Prisma client
         run: npx prisma generate --schema apps/api/prisma/schema.prisma
 
+      # @anybid/shared is consumed as build output, so it must exist before
+      # anything type-checks, seeds or bundles against it.
+      - name: Build shared package
+        run: npm run build -w @anybid/shared
+
       - name: Typecheck
         run: npm run typecheck
 
