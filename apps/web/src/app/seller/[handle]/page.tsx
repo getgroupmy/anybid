@@ -2,6 +2,7 @@ import { notFound } from 'next/navigation';
 import { serverClient } from '@/lib/session';
 import { ListingGrid } from '@/components/ListingCard';
 import { relativeTime } from '@/lib/format';
+import { ServiceUnavailable } from '@/components/ServiceUnavailable';
 import { ApiError } from '@anybid/shared';
 
 export const dynamic = 'force-dynamic';
@@ -15,7 +16,11 @@ export default async function SellerPage({ params }: { params: Promise<{ handle:
     data = await api.users.profile(handle);
   } catch (err) {
     if (err instanceof ApiError && err.statusCode === 404) notFound();
-    throw err;
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-10">
+        <ServiceUnavailable what="Seller profiles" />
+      </div>
+    );
   }
 
   const { user, listings } = data;

@@ -1,6 +1,8 @@
 import { redirect } from 'next/navigation';
 import { serverClient, readSession } from '@/lib/session';
 import { SellForm } from '@/components/SellForm';
+import { ServiceUnavailable } from '@/components/ServiceUnavailable';
+import { orNull } from '@/lib/resilient';
 
 export const metadata = { title: 'Sell an item' };
 export const dynamic = 'force-dynamic';
@@ -10,7 +12,7 @@ export default async function SellPage() {
   if (!session) redirect('/login?next=/sell');
 
   const api = await serverClient();
-  const { categories } = await api.categories.tree();
+  const tree = await orNull(api.categories.tree());
 
   return (
     <div className="mx-auto max-w-3xl px-4 py-8">
@@ -20,7 +22,11 @@ export default async function SellPage() {
         will not go below.
       </p>
       <div className="mt-6">
-        <SellForm categories={categories} />
+        {tree === null ? (
+          <ServiceUnavailable what="Listing tools" />
+        ) : (
+          <SellForm categories={tree.categories} />
+        )}
       </div>
     </div>
   );
