@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start -p 3000",
     "typecheck": "tsc --noEmit",
-    "lint": "next lint"
+    "lint": "next lint",
+    "predev": "npm run build -w @anybid/shared",
+    "prebuild": "npm run build -w @anybid/shared"
   },
   "dependencies": {
     "@anybid/shared": "*",

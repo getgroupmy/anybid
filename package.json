@@ -27,7 +27,8 @@
     "dev:api": "npm run dev -w @anybid/api",
     "dev:web": "npm run dev -w @anybid/web",
     "dev:mobile": "npm run start -w @anybid/mobile",
-    "bootstrap": "npm install && npm run db:up && npm run db:push && npm run db:seed"
+    "bootstrap": "npm install && npm run db:up && npm run db:push && npm run db:seed",
+    "predev": "npm run build -w @anybid/shared"
   },
   "devDependencies": {
     "concurrently": "^9.1.2",

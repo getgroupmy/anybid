@@ -167,13 +167,68 @@ variables → Actions):
 Until they exist that workflow fails at `vercel pull`. Vercel's own git-driven
 production deploy needs none of them.
 
-### The API does not belong on Vercel
+### API → a host that runs a persistent process
 
-It is a long-lived Fastify process: a WebSocket hub holding open connections
-for live bidding, and a settlement loop on an interval. Serverless functions
-have neither. Deploy it to a host that runs a persistent process — Railway,
-Fly.io, Render, or a container anywhere — and point `NEXT_PUBLIC_API_URL` at
-it.
+The API is not a Vercel workload. It is a long-lived Fastify process: a
+WebSocket hub holding connections open for live bidding, and a settlement loop
+on an interval. Serverless has neither.
+
+`apps/api/Dockerfile` builds it from the repository root, because the service
+depends on the `@anybid/shared` workspace. The same image runs on Fly.io,
+Railway, Render or any container host:
+
+```bash
+docker build -f apps/api/Dockerfile -t anybid-api .
+```
+
+`fly.toml` is a worked example:
+
+```bash
+fly launch --no-deploy --copy-config
+fly postgres create --name anybid-db && fly postgres attach anybid-db
+fly secrets set JWT_SECRET="$(openssl rand -base64 48)" CORS_ORIGINS="https://anybid.my"
+fly deploy
+```
+
+Then point the website at it — `NEXT_PUBLIC_API_URL=https://anybid-api.fly.dev`
+and `NEXT_PUBLIC_WS_URL=wss://anybid-api.fly.dev/realtime` in Vercel.
+
+#### Exactly one process settles auctions
+
+The deployment runs two processes from one image:
+
+| Process | Command | Role |
+|---|---|---|
+| `app` | `node apps/api/dist/src/server.js` | HTTP + the bidding WebSocket |
+| `worker` | `node apps/api/dist/src/workers/settlement-worker.js` | Closes auctions, creates orders, sends ending-soon alerts |
+
+`SETTLEMENT_TICK_MS=0` is set process-wide so **API instances do not settle**,
+which is what lets them scale horizontally without racing to close the same
+auction. The worker ignores that value and uses its own default — settling is
+the only thing it does. Run exactly one worker.
+
+The conditional claim in `settleListing` means a second worker would be
+harmless rather than catastrophic, but it would still waste work.
+
+#### Migrations
+
+`prisma/migrations/0_init` is the baseline, generated from the schema and
+verified to reproduce it with no drift. Fly's `release_command` runs
+`prisma migrate deploy` once per release, before any instance starts, so a
+deploy never serves traffic against an out-of-date schema. On a host without a
+release phase, run it as a pre-start step.
+
+Do **not** use `prisma db push` against production — it is a development
+convenience that can drop columns to match the schema.
+
+#### Required environment
+
+| Variable | Notes |
+|---|---|
+| `DATABASE_URL` | PostgreSQL 14+. Attached automatically by `fly postgres attach` |
+| `JWT_SECRET` | At least 32 characters; startup refuses to boot without it in production |
+| `CORS_ORIGINS` | Comma-separated. Set to the website's origin, not `*` |
+| `SETTLEMENT_TICK_MS` | `0` on API instances; the worker overrides it |
 
 ### Everything else
 

@@ -12,7 +12,8 @@
     "build:huawei": "EXPO_PUBLIC_DIST_CHANNEL=huawei eas build -p android --profile huawei",
     "build:android": "eas build -p android --profile production",
     "build:ios": "eas build -p ios --profile production",
-    "strip:gms": "npm uninstall expo-notifications --workspace @anybid/mobile"
+    "strip:gms": "npm uninstall expo-notifications --workspace @anybid/mobile",
+    "prestart": "npm run build -w @anybid/shared"
   },
   "dependencies": {
     "@anybid/shared": "*",
