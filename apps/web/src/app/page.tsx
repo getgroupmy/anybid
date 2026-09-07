@@ -2,6 +2,8 @@ import Link from 'next/link';
 import { serverClient } from '@/lib/session';
 import { ListingCard, ListingGrid } from '@/components/ListingCard';
 import { AdSlot } from '@/components/AdSlot';
+import { ServiceUnavailable } from '@/components/ServiceUnavailable';
+import { orNull } from '@/lib/resilient';
 import { formatMoney } from '@/lib/format';
 import type { Category, ListingSummary } from '@anybid/shared';
 
@@ -10,18 +12,22 @@ export const dynamic = 'force-dynamic';
 export default async function HomePage() {
   const api = await serverClient();
 
+  // Each call degrades on its own. Without this a single unreachable
+  // dependency replaces the entire home page with an error boundary.
   const [endingSoon, featured, newest, categories, stats] = await Promise.all([
-    api.listings.search({ sort: 'ending_soon', perPage: 10, status: 'LIVE', endingWithinHours: 48 }),
-    api.listings.search({ sort: 'relevance', perPage: 5, status: 'LIVE' }),
-    api.listings.search({ sort: 'newest', perPage: 10, status: 'LIVE' }),
-    api.categories.tree(),
-    api
-      .request<{ liveListings: number; bids: number; users: number; gmv: number }>('/v1/stats', {
+    orNull(api.listings.search({ sort: 'ending_soon', perPage: 10, status: 'LIVE', endingWithinHours: 48 })),
+    orNull(api.listings.search({ sort: 'relevance', perPage: 5, status: 'LIVE' })),
+    orNull(api.listings.search({ sort: 'newest', perPage: 10, status: 'LIVE' })),
+    orNull(api.categories.tree()),
+    orNull(
+      api.request<{ liveListings: number; bids: number; users: number; gmv: number }>('/v1/stats', {
         method: 'GET',
         auth: false,
-      })
-      .catch(() => null),
+      }),
+    ),
   ]);
+
+  const marketplaceDown = endingSoon === null && newest === null;
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">
@@ -55,18 +61,25 @@ export default async function HomePage() {
         <AdSlot placement="HOME_HERO" className="hidden lg:block" />
       </section>
 
-      <Section
-        title="Ending soon"
-        subtitle="The clock is the whole point — these close within 48 hours."
-        href="/search?sort=ending_soon"
-      >
-        <ListingGrid listings={endingSoon.items} />
-      </Section>
+      {marketplaceDown ? (
+        <div className="mt-10">
+          <ServiceUnavailable />
+        </div>
+      ) : (
+        <Section
+          title="Ending soon"
+          subtitle="The clock is the whole point — these close within 48 hours."
+          href="/search?sort=ending_soon"
+        >
+          <ListingGrid listings={endingSoon?.items ?? []} />
+        </Section>
+      )}
 
+      {(categories?.categories.length ?? 0) > 0 && (
       <section className="mt-10">
         <h2 className="text-lg font-bold text-ink-900">Browse by category</h2>
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          {categories.categories.map((c: Category) => (
+          {(categories?.categories ?? []).map((c: Category) => (
             <Link
               key={c.id}
               href={`/category/${c.slug}`}
@@ -79,18 +92,23 @@ export default async function HomePage() {
           ))}
         </div>
       </section>
+      )}
 
-      <Section title="Featured" subtitle="Promoted by sellers and hand-picked by our team.">
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {featured.items.slice(0, 3).map((l: ListingSummary) => (
-            <ListingCard key={l.id} listing={l} />
-          ))}
-        </div>
-      </Section>
+      {(featured?.items.length ?? 0) > 0 && (
+        <Section title="Featured" subtitle="Promoted by sellers and hand-picked by our team.">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {(featured?.items ?? []).slice(0, 3).map((l: ListingSummary) => (
+              <ListingCard key={l.id} listing={l} />
+            ))}
+          </div>
+        </Section>
+      )}
 
-      <Section title="Just listed" href="/search?sort=newest">
-        <ListingGrid listings={newest.items} />
-      </Section>
+      {!marketplaceDown && (
+        <Section title="Just listed" href="/search?sort=newest">
+          <ListingGrid listings={newest?.items ?? []} />
+        </Section>
+      )}
 
       <section className="mt-12 grid gap-4 sm:grid-cols-3">
         <Explainer

@@ -248,8 +248,19 @@ export interface SettlementLoop {
   stop(): void;
 }
 
-/** Starts the in-process scheduler. In production run it as its own worker. */
+/**
+ * Starts the in-process scheduler. In production run exactly one of these —
+ * either a dedicated worker process or a single API instance.
+ *
+ * A tick of 0 or less disables the loop, which is how additional API
+ * instances opt out so they do not all race to settle the same auctions.
+ */
 export function startSettlementLoop(tickMs: number): SettlementLoop {
+  if (tickMs <= 0) {
+    console.log('[settlement] loop disabled (SETTLEMENT_TICK_MS <= 0)');
+    return { stop: () => undefined };
+  }
+
   let running = false;
   let lastAlertHour = -1;
 

@@ -5,8 +5,10 @@ import { ListingGrid } from '@/components/ListingCard';
 import { Pagination } from '@/components/Pagination';
 import { AdSlot } from '@/components/AdSlot';
 import { plural } from '@/lib/format';
+import { ServiceUnavailable } from '@/components/ServiceUnavailable';
+import { emptyPage, orNull } from '@/lib/resilient';
 import { Suspense } from 'react';
-import type { Category } from '@anybid/shared';
+import type { Category, ListingSummary } from '@anybid/shared';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,20 +33,32 @@ export default async function CategoryPage({
   const search = await searchParams;
   const api = await serverClient();
 
-  const { categories } = await api.categories.tree();
-  const found = findCategory(categories, slug);
+  const tree = await orNull(api.categories.tree());
+  // The API being down is not the same as the category not existing, so a
+  // failed lookup must not 404 the page.
+  if (tree === null) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-10">
+        <ServiceUnavailable what="Categories" />
+      </div>
+    );
+  }
+  const found = findCategory(tree.categories, slug);
   if (!found) notFound();
 
   const query = Object.fromEntries(
     Object.entries(search).filter(([, v]) => typeof v === 'string' && v !== ''),
   ) as Record<string, string>;
 
-  const results = await api.listings.search({
-    ...query,
-    categorySlug: slug,
-    perPage: 24,
-    sort: query.sort ?? 'ending_soon',
-  });
+  const listed = await orNull(
+    api.listings.search({
+      ...query,
+      categorySlug: slug,
+      perPage: 24,
+      sort: query.sort ?? 'ending_soon',
+    }),
+  );
+  const results = listed ?? emptyPage<ListingSummary>();
 
   const siblings = found.parent?.children ?? found.node.children ?? [];
 
@@ -69,7 +83,9 @@ export default async function CategoryPage({
       <h1 className="text-2xl font-bold text-ink-900">
         {found.node.icon} {found.node.name}
       </h1>
-      <p className="mt-0.5 text-sm text-ink-500">{plural(results.total, 'live listing')}</p>
+      {listed !== null && (
+        <p className="mt-0.5 text-sm text-ink-500">{plural(results.total, 'live listing')}</p>
+      )}
 
       {siblings.length > 0 && (
         <div className="mt-4 flex flex-wrap gap-2">
@@ -92,7 +108,7 @@ export default async function CategoryPage({
       <AdSlot placement="CATEGORY_BANNER" categoryId={found.node.id} className="mt-6" />
 
       <div className="mt-6">
-        <ListingGrid listings={results.items} />
+        {listed === null ? <ServiceUnavailable /> : <ListingGrid listings={results.items} />}
         <Suspense>
           <Pagination page={results.page} totalPages={results.totalPages} />
         </Suspense>

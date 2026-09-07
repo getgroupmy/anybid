@@ -6,8 +6,10 @@ import { ImageGallery } from '@/components/ImageGallery';
 import { WatchButton } from '@/components/WatchButton';
 import { ListingCard } from '@/components/ListingCard';
 import { AdSlot } from '@/components/AdSlot';
+import { ServiceUnavailable } from '@/components/ServiceUnavailable';
 import { dateTime, formatMoney, relativeTime, statusTone } from '@/lib/format';
 import { ApiError } from '@anybid/shared';
+import { orNull } from '@/lib/resilient';
 
 export const dynamic = 'force-dynamic';
 
@@ -44,11 +46,17 @@ export default async function ListingPage({ params }: { params: Promise<{ slug: 
   try {
     listing = (await api.listings.get(slug)).listing;
   } catch (err) {
+    // A missing listing is a 404; an unreachable API is not — saying "not
+    // found" for an outage would tell the visitor something untrue.
     if (err instanceof ApiError && err.statusCode === 404) notFound();
-    throw err;
+    return (
+      <div className="mx-auto max-w-3xl px-4 py-10">
+        <ServiceUnavailable what="Listings" />
+      </div>
+    );
   }
 
-  const similar = await api.listings.similar(listing.id).catch(() => ({ items: [] }));
+  const similar = (await orNull(api.listings.similar(listing.id))) ?? { items: [] };
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-6">

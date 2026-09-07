@@ -109,8 +109,19 @@ commit through the Vercel CLI, and needs `VERCEL_TOKEN`, `VERCEL_ORG_ID` and
 
 The API is **not** a Vercel workload: it holds WebSocket connections open for
 live bidding and runs a settlement loop on an interval, so it needs a host that
-runs a persistent process (Railway, Fly.io, Render, a container). Details in
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#deployment).
+runs a persistent process. `apps/api/Dockerfile` builds it and `fly.toml` is a
+worked Fly.io example — one `app` process serving HTTP and the socket, one
+`worker` process settling auctions, and `prisma migrate deploy` on release:
+
+```bash
+fly launch --no-deploy --copy-config
+fly postgres create --name anybid-db && fly postgres attach anybid-db
+fly secrets set JWT_SECRET="$(openssl rand -base64 48)" CORS_ORIGINS="https://anybid.my"
+fly deploy
+```
+
+Then set `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` in Vercel to point at
+it. Full details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#deployment).
 
 ## Documentation
 

@@ -1,0 +1,63 @@
+# AnyBid API on Fly.io.
+#
+#   fly launch --no-deploy --copy-config
+#   fly postgres create --name anybid-db && fly postgres attach anybid-db
+#   fly secrets set JWT_SECRET="$(openssl rand -base64 48)" CORS_ORIGINS="https://anybid.my"
+#   fly deploy
+#
+# The website stays on Vercel; only the API runs here, because it holds
+# WebSocket connections open for live bidding and runs the settlement loop.
+
+app = "anybid-api"
+primary_region = "sin"        # Singapore — closest region to Malaysia
+
+[build]
+  dockerfile = "apps/api/Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+  API_HOST = "0.0.0.0"
+  API_PORT = "4000"
+  # Process-wide: API instances do not settle auctions, so they can scale
+  # horizontally without racing. The worker process ignores this and uses its
+  # own default — settling is the only thing it does.
+  SETTLEMENT_TICK_MS = "0"
+
+[deploy]
+  # Applies pending migrations once per release, before any instance starts.
+  release_command = "npx prisma migrate deploy --schema apps/api/prisma/schema.prisma"
+
+[processes]
+  # Serves HTTP and the bidding WebSocket. The settlement loop is off here so
+  # scaling to several instances cannot make them race to close the same
+  # auction — the worker below owns that.
+  app = "node apps/api/dist/src/server.js"
+  # Exactly one of these. It closes auctions, creates orders and sends the
+  # ending-soon alerts.
+  worker = "node apps/api/dist/src/workers/settlement-worker.js"
+
+[http_service]
+  processes = ["app"]
+  internal_port = 4000
+  force_https = true
+  # WebSockets need a warm instance; a cold start drops the bidding socket.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+  processes = ["app"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
+  processes = ["worker"]

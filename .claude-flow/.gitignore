@@ -5,3 +5,11 @@ sessions/
 neural/
 *.log
 *.tmp
+
+# Machine-local daemon state and metric snapshots — regenerated every run,
+# meaningless on another machine, and a source of noise in diffs.
+daemon.pid
+daemon-state.json
+harness-active-policy.json
+policy/
+metrics/

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/server.ts",
-    "start": "node dist/server.js",
+    "start": "node dist/src/server.js",
     "build": "prisma generate && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
@@ -15,7 +15,11 @@
     "db:studio": "prisma studio",
     "db:seed": "tsx prisma/seed.ts",
     "db:reset": "prisma migrate reset --force --skip-seed && tsx prisma/seed.ts",
-    "worker": "tsx src/workers/settlement-worker.ts"
+    "worker": "tsx src/workers/settlement-worker.ts",
+    "start:worker": "node dist/src/workers/settlement-worker.js",
+    "predev": "npm run build -w @anybid/shared",
+    "pretypecheck": "npm run build -w @anybid/shared",
+    "predb:seed": "npm run build -w @anybid/shared"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

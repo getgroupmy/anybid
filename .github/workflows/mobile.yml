@@ -18,6 +18,11 @@ jobs:
           cache: npm
 
       - run: npm ci
+
+      # @anybid/shared is consumed as build output, so it must exist before
+      # anything type-checks, seeds or bundles against it.
+      - name: Build shared package
+        run: npm run build -w @anybid/shared
       - run: npm run typecheck -w @anybid/mobile
 
       # Bundling both channels catches an import that only one variant links —
