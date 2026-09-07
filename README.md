@@ -93,6 +93,18 @@ both create an order for the same listing.
 
 See [docs/BIDDING.md](docs/BIDDING.md) for the walkthrough.
 
+## Deploying
+
+The website deploys to **Vercel** as configured — `vercel.json` builds only
+`@anybid/web` from the monorepo and serves `apps/web/.next`. Set
+`NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_WS_URL` in the Vercel project or the
+deployed site will point at `localhost`.
+
+The API is **not** a Vercel workload: it holds WebSocket connections open for
+live bidding and runs a settlement loop on an interval, so it needs a host that
+runs a persistent process (Railway, Fly.io, Render, a container). Details in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#deployment).
+
 ## Documentation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — layout, data model, request path, deployment

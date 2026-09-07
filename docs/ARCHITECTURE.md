@@ -111,6 +111,34 @@ destination — the client is never trusted to create billing events.
 
 ## Deployment
 
+### Website → Vercel
+
+`vercel.json` at the repository root configures the monorepo deploy: install at
+the root so npm workspaces resolve, build only `@anybid/web`, and serve
+`apps/web/.next`. `.vercelignore` keeps `apps/api` and `apps/mobile` out of the
+upload.
+
+Two environment variables must be set in the Vercel project, or the deployed
+site will point at `localhost` and fail to load anything:
+
+| Variable | Example |
+|---|---|
+| `NEXT_PUBLIC_API_URL` | `https://api.anybid.my` |
+| `NEXT_PUBLIC_WS_URL` | `wss://api.anybid.my/realtime` |
+
+Vercel Analytics is already mounted in the root layout and needs no
+configuration — enable Analytics on the project and it starts collecting.
+
+### The API does not belong on Vercel
+
+It is a long-lived Fastify process: a WebSocket hub holding open connections
+for live bidding, and a settlement loop on an interval. Serverless functions
+have neither. Deploy it to a host that runs a persistent process — Railway,
+Fly.io, Render, or a container anywhere — and point `NEXT_PUBLIC_API_URL` at
+it.
+
+### Everything else
+
 - **API** — any Node 20+ host. Run migrations with `npm run db:deploy -w
   @anybid/api`. Run exactly one settlement worker (`npm run worker -w
   @anybid/api`) and set `SETTLEMENT_TICK_MS=0` on the web-facing instances if
