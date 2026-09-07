@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: anybid-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: anybid
+      POSTGRES_PASSWORD: anybid
+      POSTGRES_DB: anybid
+    ports: ["5432:5432"]
+    volumes: ["anybid-pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U anybid -d anybid"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: anybid-redis
+    restart: unless-stopped
+    ports: ["6379:6379"]
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["anybid-redisdata:/data"]
+
+volumes:
+  anybid-pgdata:
+  anybid-redisdata:

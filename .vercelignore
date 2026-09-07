@@ -1,0 +1,10 @@
+# Only the website deploys to Vercel. The API is a long-lived Fastify server
+# with a WebSocket hub, and the Expo app is not a web target — neither belongs
+# in the deployment upload.
+apps/api
+apps/mobile
+docs
+.claude
+.claude-flow
+.agents
+.swarm
