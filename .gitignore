@@ -23,6 +23,10 @@ ios/
 .claude-flow/logs/
 .claude-flow/sessions/
 
+# Ruflo locally-adopted config — timestamped per machine, not shared source
+.claude/proven-config.json
+.claude/.proven-config-version
+
 # Ruflo runtime state (local databases, not source)
 .swarm/
 ruvector.db
