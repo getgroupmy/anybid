@@ -56,7 +56,10 @@ export function AuthForm({ mode }: Props) {
       router.push(next);
       router.refresh();
     } catch {
-      setError('Could not reach AnyBid. Check your connection and try again.');
+      // Reached only when the browser itself could not complete the request.
+      // A reachable server that cannot reach the API answers 503 above, with a
+      // message that does not blame the visitor's network.
+      setError('We could not complete that request. Check your connection and try again.');
     } finally {
       setBusy(false);
     }
