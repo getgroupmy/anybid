@@ -1,0 +1,122 @@
+# AnyBid API — the whole backend on one machine.
+#
+# The website is on Vercel; this is everything the website talks to. It runs on
+# any host that has Docker, including the free tiers that give you a real
+# always-on VM (Oracle Cloud Always Free, a $5 VPS, your own box). It is
+# deliberately not a serverless stack: AnyBid holds bidding WebSockets open and
+# closes auctions on a five-second tick, so a host that sleeps the process does
+# not just make the site slow — it drops live bidders and lets auctions close
+# late, which silently breaks anti-sniping.
+#
+#   1. Point an A record for your API domain at the machine. Caddy orders the
+#      TLS certificate on first boot and that fails if DNS is not there yet.
+#   2. Write .env.prod (git ignores it — never commit it):
+#
+#        API_DOMAIN=api.anybid.my
+#        JWT_SECRET=<64 random hex characters>
+#        POSTGRES_PASSWORD=<a long random password>
+#        DATABASE_URL=postgresql://anybid:<same password>@postgres:5432/anybid?schema=public
+#        CORS_ORIGINS=https://anybid.my,https://www.anybid.my
+#
+#   3. npm run deploy:api
+#
+# Using a managed database (Neon, Supabase) instead of the postgres service
+# here: set DATABASE_URL to its *pooled* connection string, drop
+# POSTGRES_PASSWORD, and run `npm run deploy:api:external-db`, which leaves the
+# postgres service out. Pooled matters — the direct connection string runs out
+# of Postgres connections under load.
+#
+# Then set NEXT_PUBLIC_API_URL=https://$API_DOMAIN and
+# NEXT_PUBLIC_WS_URL=wss://$API_DOMAIN in Vercel and redeploy the website.
+
+name: anybid
+
+x-api-env: &api-env
+  NODE_ENV: production
+  DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in .env.prod}
+  JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env.prod — 32 characters or more}
+  PUBLIC_API_URL: https://${API_DOMAIN:?set API_DOMAIN in .env.prod}
+  CORS_ORIGINS: ${CORS_ORIGINS:-https://anybid.my,https://www.anybid.my}
+  PLATFORM_CURRENCY: ${PLATFORM_CURRENCY:-MYR}
+
+x-api-image: &api-image
+  image: anybid-api:latest
+  build:
+    context: .
+    dockerfile: apps/api/Dockerfile
+  restart: unless-stopped
+
+services:
+  # Only started with `--profile localdb`. It publishes no port: nothing
+  # outside the compose network can reach the database.
+  postgres:
+    profiles: ["localdb"]
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-anybid}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.prod}
+      POSTGRES_DB: ${POSTGRES_DB:-anybid}
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-anybid} -d ${POSTGRES_DB:-anybid}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # Runs the pending migrations once and exits. Nothing else starts until it
+  # succeeds, so the API never serves against a schema it does not match.
+  # It retries because postgres may still be starting on a cold machine.
+  migrate:
+    <<: *api-image
+    restart: on-failure
+    environment: *api-env
+    command:
+      ["npx", "prisma", "migrate", "deploy", "--schema", "apps/api/prisma/schema.prisma"]
+
+  # HTTP and the bidding WebSocket. The settlement loop is off here: this is
+  # the service you scale, and several copies would race to close the same
+  # auction. The worker below owns that, and there is exactly one of it.
+  api:
+    <<: *api-image
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      <<: *api-env
+      SETTLEMENT_TICK_MS: "0"
+    expose: ["4000"]
+    healthcheck:
+      test:
+        ["CMD", "node", "-e",
+         "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # Closes auctions, creates orders, sends the ending-soon alerts. Never run
+  # more than one.
+  worker:
+    <<: *api-image
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    environment:
+      <<: *api-env
+      SETTLEMENT_TICK_MS: ${SETTLEMENT_TICK_MS:-5000}
+    command: ["node", "apps/api/dist/src/workers/settlement-worker.js"]
+
+  # Terminates TLS for API_DOMAIN and proxies to the api service, WebSocket
+  # upgrades included. Certificates live in the caddy-data volume, so a
+  # redeploy does not re-order them and trip Let's Encrypt rate limits.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api]
+    ports: ["80:80", "443:443", "443:443/udp"]
+    command: ["caddy", "reverse-proxy", "--from", "${API_DOMAIN}", "--to", "api:4000"]
+    volumes: ["caddy-data:/data", "caddy-config:/config"]
+
+volumes:
+  pgdata:
+  caddy-data:
+  caddy-config:
