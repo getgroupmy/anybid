@@ -28,6 +28,9 @@
     "dev:web": "npm run dev -w @anybid/web",
     "dev:mobile": "npm run start -w @anybid/mobile",
     "bootstrap": "npm install && npm run db:up && npm run db:push && npm run db:seed",
+    "deploy:api": "docker compose -f docker-compose.prod.yml --env-file .env.prod --profile localdb up -d --build",
+    "deploy:api:external-db": "docker compose -f docker-compose.prod.yml --env-file .env.prod up -d --build",
+    "deploy:api:logs": "docker compose -f docker-compose.prod.yml logs -f api worker",
     "predev": "npm run build -w @anybid/shared"
   },
   "devDependencies": {
