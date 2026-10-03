@@ -29,5 +29,7 @@ export const conflict = (message: string, details?: unknown) =>
   new HttpError(409, 'CONFLICT', message, details);
 export const unprocessable = (message: string, details?: unknown) =>
   new HttpError(422, 'UNPROCESSABLE', message, details);
+export const serviceUnavailable = (message: string) =>
+  new HttpError(503, 'SERVICE_UNAVAILABLE', message);
 export const tooMany = (message = 'Slow down — too many requests') =>
   new HttpError(429, 'RATE_LIMITED', message);

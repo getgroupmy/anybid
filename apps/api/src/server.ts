@@ -2,6 +2,7 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import { ZodError } from 'zod';
@@ -9,11 +10,13 @@ import { env } from './env.ts';
 import { prisma } from './db.ts';
 import { attachAuth } from './lib/auth.ts';
 import { badRequest, HttpError } from './lib/errors.ts';
+import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_UPLOAD } from './lib/images.ts';
 import { hub } from './realtime/hub.ts';
 import { realtimeRoutes } from './realtime/routes.ts';
 import { authRoutes } from './routes/auth.ts';
 import { listingRoutes } from './routes/listings.ts';
 import { orderRoutes } from './routes/orders.ts';
+import { uploadRoutes } from './routes/uploads.ts';
 import { miscRoutes } from './routes/misc.ts';
 import { advertiserRoutes } from './routes/advertiser.ts';
 import { corporateRoutes } from './routes/corporate.ts';
@@ -43,6 +46,12 @@ export async function buildServer() {
 
   await app.register(websocket, {
     options: { maxPayload: 64 * 1024 },
+  });
+
+  // Listing photos. The per-file ceiling lives with the validation in
+  // lib/images.ts; this only has to be large enough not to pre-empt it.
+  await app.register(multipart, {
+    limits: { fileSize: MAX_IMAGE_BYTES, files: MAX_IMAGES_PER_UPLOAD, fields: 4 },
   });
 
   // A POST with a JSON content-type but no body is a normal thing for clients
@@ -122,6 +131,7 @@ export async function buildServer() {
   await app.register(authRoutes);
   await app.register(listingRoutes);
   await app.register(orderRoutes);
+  await app.register(uploadRoutes);
   await app.register(miscRoutes);
   await app.register(advertiserRoutes);
   await app.register(corporateRoutes);

@@ -4,6 +4,7 @@ import { useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { computeFees, DEFAULT_FEES, type Category } from '@anybid/shared';
 import { browserClient } from '@/lib/client';
+import { downscaleImage } from '@/lib/image';
 import { formatMoney, moneyInputToMinor } from '@/lib/format';
 
 const CONDITIONS = [
@@ -23,6 +24,9 @@ const DURATIONS = [
   [240, '10 days'],
 ] as const;
 
+/** Matches the `images` cap in the shared createListingSchema. */
+const MAX_PHOTOS = 12;
+
 const STATES = ['Kuala Lumpur', 'Selangor', 'Penang', 'Johor', 'Perak', 'Sabah', 'Sarawak'];
 
 export function SellForm({ categories }: { categories: Category[] }) {
@@ -33,9 +37,63 @@ export function SellForm({ categories }: { categories: Category[] }) {
 
   const [kind, setKind] = useState<'AUCTION' | 'AUCTION_WITH_BUY_NOW' | 'BUY_NOW'>('AUCTION');
   const [startPrice, setStartPrice] = useState('');
-  const [images, setImages] = useState<string[]>([
-    `https://picsum.photos/seed/${Math.random().toString(36).slice(2)}/800/600`,
-  ]);
+  const [images, setImages] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  async function onPickPhotos(e: React.ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(e.target.files ?? []);
+    // Let the same file be chosen again after a removal.
+    e.target.value = '';
+    if (picked.length === 0) return;
+
+    const room = MAX_PHOTOS - images.length;
+    if (room <= 0) {
+      setUploadError(`A listing can have ${MAX_PHOTOS} photos.`);
+      return;
+    }
+
+    setUploading(true);
+    setUploadError(picked.length > room ? `Only the first ${room} were added.` : null);
+
+    try {
+      const body = new FormData();
+      for (const original of picked.slice(0, room)) {
+        const { file } = await downscaleImage(original);
+        body.append('photos', file, file.name);
+      }
+
+      // Straight to the proxy: FormData needs its own multipart boundary,
+      // which the typed JSON client does not produce.
+      const res = await fetch('/api/proxy/v1/uploads/images', {
+        method: 'POST',
+        body,
+        credentials: 'same-origin',
+      });
+      const data = (await res.json().catch(() => null)) as
+        | { images?: string[]; message?: string }
+        | null;
+
+      if (!res.ok || !data?.images) {
+        setUploadError(data?.message ?? 'That upload failed. Please try again.');
+        return;
+      }
+      setImages((prev) => [...prev, ...data.images!].slice(0, MAX_PHOTOS));
+      setFieldErrors((prev) => ({ ...prev, images: '' }));
+    } catch {
+      setUploadError('That upload failed. Please check your connection and try again.');
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  function removePhoto(url: string) {
+    setImages((prev) => prev.filter((u) => u !== url));
+  }
+
+  function makeCover(url: string) {
+    setImages((prev) => [url, ...prev.filter((u) => u !== url)]);
+  }
 
   // Show the seller exactly what they take home before they commit.
   const feePreview = useMemo(() => {
@@ -133,21 +191,61 @@ export function SellForm({ categories }: { categories: Category[] }) {
           </Field>
         </div>
 
-        <Field label="Photos" error={fieldErrors.images} hint="Paste image URLs, one per line. The first is the cover photo.">
-          <textarea
-            className="input min-h-24 font-mono text-xs"
-            value={images.join('\n')}
-            onChange={(e) => setImages(e.target.value.split('\n').map((s) => s.trim()).filter(Boolean))}
+        <Field
+          label="Photos"
+          error={fieldErrors.images || uploadError || undefined}
+          hint={`JPEG, PNG or WebP, up to ${MAX_PHOTOS}. Large photos are shrunk before upload. The first is the cover.`}
+        >
+          <input
+            type="file"
+            accept="image/jpeg,image/png,image/webp"
+            multiple
+            disabled={uploading || images.length >= MAX_PHOTOS}
+            onChange={onPickPhotos}
+            className="input cursor-pointer file:mr-3 file:rounded-md file:border-0 file:bg-ink-100 file:px-3 file:py-1.5 file:text-sm file:font-medium"
           />
         </Field>
 
+        {uploading && (
+          <p role="status" className="text-xs text-ink-500">
+            Uploading photos…
+          </p>
+        )}
+
         {images.length > 0 && (
-          <div className="flex gap-2 overflow-x-auto">
-            {images.slice(0, 6).map((src) => (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img key={src} src={src} alt="" className="h-20 w-20 shrink-0 rounded-lg object-cover" />
+          <ul className="flex list-none flex-wrap gap-2 p-0">
+            {images.map((src, i) => (
+              <li key={src} className="group relative">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={src}
+                  alt={i === 0 ? 'Cover photo' : `Photo ${i + 1}`}
+                  className="h-20 w-20 rounded-lg object-cover"
+                />
+                {i === 0 ? (
+                  <span className="absolute bottom-0 left-0 right-0 rounded-b-lg bg-ink-900/70 py-0.5 text-center text-[10px] font-semibold text-white">
+                    Cover
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => makeCover(src)}
+                    className="absolute bottom-0 left-0 right-0 rounded-b-lg bg-ink-900/70 py-0.5 text-center text-[10px] font-semibold text-white opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"
+                  >
+                    Make cover
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => removePhoto(src)}
+                  aria-label={`Remove photo ${i + 1}`}
+                  className="absolute -right-1.5 -top-1.5 h-5 w-5 rounded-full bg-ink-900 text-xs font-bold leading-none text-white"
+                >
+                  ×
+                </button>
+              </li>
             ))}
-          </div>
+          </ul>
         )}
 
         <Field label="Tags" hint="Comma separated. These power search and ad targeting.">

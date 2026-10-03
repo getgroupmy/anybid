@@ -18,6 +18,15 @@
 #        DATABASE_URL=postgresql://anybid:<same password>@postgres:5432/anybid?schema=public
 #        CORS_ORIGINS=https://anybid.my,https://www.anybid.my
 #
+#      Listing photos live in Cloudflare R2. Add these to enable uploads —
+#      without them the site works and the upload endpoint answers 503:
+#
+#        R2_ACCOUNT_ID=<Cloudflare account id>
+#        R2_ACCESS_KEY_ID=<R2 API token access key>
+#        R2_SECRET_ACCESS_KEY=<R2 API token secret>
+#        R2_BUCKET=anybid-listings
+#        R2_PUBLIC_BASE_URL=https://img.anybid.my
+#
 #   3. npm run deploy:api
 #
 # Using a managed database (Neon, Supabase) instead of the postgres service
@@ -38,6 +47,13 @@ x-api-env: &api-env
   PUBLIC_API_URL: https://${API_DOMAIN:?set API_DOMAIN in .env.prod}
   CORS_ORIGINS: ${CORS_ORIGINS:-https://anybid.my,https://www.anybid.my}
   PLATFORM_CURRENCY: ${PLATFORM_CURRENCY:-MYR}
+  # Cloudflare R2 holds listing photos. Leave these empty and the API still
+  # runs — the upload endpoint answers 503 and the rest of the site works.
+  R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+  R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  R2_BUCKET: ${R2_BUCKET:-}
+  R2_PUBLIC_BASE_URL: ${R2_PUBLIC_BASE_URL:-}
 
 x-api-image: &api-image
   image: anybid-api:latest
