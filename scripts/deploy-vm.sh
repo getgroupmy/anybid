@@ -55,6 +55,16 @@ JWT_SECRET=$jwt
 POSTGRES_PASSWORD=$pgpass
 DATABASE_URL=postgresql://anybid:$pgpass@postgres:5432/anybid?schema=public
 CORS_ORIGINS=https://anybid.my,https://www.anybid.my
+
+# Cloudflare R2, for listing photos. Until these are filled in the site runs
+# normally and the upload endpoint answers 503, so sellers see an honest
+# message rather than a broken form. Create a bucket, an R2 API token scoped
+# to it, and serve the bucket from a domain you control.
+R2_ACCOUNT_ID=
+R2_ACCESS_KEY_ID=
+R2_SECRET_ACCESS_KEY=
+R2_BUCKET=
+R2_PUBLIC_BASE_URL=
 ENV
 fi
 chmod 600 .env.prod

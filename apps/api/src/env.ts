@@ -48,11 +48,33 @@ export const env = {
   accessTtlSec: Number(process.env.JWT_ACCESS_TTL ?? 900),
   refreshTtlSec: Number(process.env.JWT_REFRESH_TTL ?? 2_592_000),
   publicApiUrl: process.env.PUBLIC_API_URL ?? 'http://localhost:4000',
-  uploadDir: process.env.UPLOAD_DIR ?? './uploads',
   currency: process.env.PLATFORM_CURRENCY ?? 'MYR',
   settlementTickMs: Number(process.env.SETTLEMENT_TICK_MS ?? 5000),
   corsOrigins: (process.env.CORS_ORIGINS ?? '*').split(',').map((s) => s.trim()),
+  /**
+   * Cloudflare R2 holds listing photos. Every field is optional: with none of
+   * them set the API still runs and the upload endpoint answers 503, so local
+   * development and the degraded production path both stay honest rather than
+   * crashing on boot.
+   */
+  r2: {
+    accountId: process.env.R2_ACCOUNT_ID ?? '',
+    accessKeyId: process.env.R2_ACCESS_KEY_ID ?? '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY ?? '',
+    bucket: process.env.R2_BUCKET ?? '',
+    // Where the bucket is served from — a custom domain, or the r2.dev URL.
+    // Trailing slashes are stripped so key joining is unambiguous.
+    publicBaseUrl: (process.env.R2_PUBLIC_BASE_URL ?? '').replace(/\/+$/, ''),
+  },
 };
+
+/** True only when every R2 setting needed to store and serve a photo is present. */
+export const uploadsEnabled =
+  env.r2.accountId !== '' &&
+  env.r2.accessKeyId !== '' &&
+  env.r2.secretAccessKey !== '' &&
+  env.r2.bucket !== '' &&
+  env.r2.publicBaseUrl !== '';
 
 if (env.isProd && env.jwtSecret.length < 32) {
   throw new Error('JWT_SECRET must be at least 32 characters in production');
