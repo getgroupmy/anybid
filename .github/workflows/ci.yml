@@ -23,6 +23,9 @@ jobs:
 
     env:
       DATABASE_URL: postgresql://anybid:anybid@localhost:5432/anybid?schema=public
+      # Scratch database for `prisma migrate diff`, which replays the
+      # migrations somewhere disposable to compare them against the schema.
+      SHADOW_DATABASE_URL: postgresql://anybid:anybid@localhost:5432/shadow?schema=public
       JWT_SECRET: ci-only-secret-0123456789abcdef0123456789
       NEXT_PUBLIC_API_URL: http://localhost:4000
       NEXT_PUBLIC_WS_URL: ws://localhost:4000/realtime
@@ -51,9 +54,26 @@ jobs:
       - name: Unit tests (auction engine)
         run: npm run test -w @anybid/shared
 
-      - name: Push schema and seed
+      # Fails if schema.prisma and the migrations have diverged. Without this
+      # the schema can gain a field no migration creates: `db push` would still
+      # be green here while every production deploy served against a database
+      # missing that column.
+      - name: Check migrations match the schema
         run: |
-          npx prisma db push --schema apps/api/prisma/schema.prisma --skip-generate
+          # psql rejects Prisma's ?schema= parameter, so strip the query string.
+          psql "${DATABASE_URL%%\?*}" -c 'CREATE DATABASE shadow;'
+          npx prisma migrate diff \
+            --from-migrations apps/api/prisma/migrations \
+            --to-schema-datamodel apps/api/prisma/schema.prisma \
+            --shadow-database-url "$SHADOW_DATABASE_URL" \
+            --exit-code
+
+      # `migrate deploy` is what the production stack runs, so run it here too.
+      # `db push` would diff the schema straight onto the database and leave the
+      # migration itself untested.
+      - name: Apply migrations and seed
+        run: |
+          npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
           npm run db:seed -w @anybid/api
 
       - name: End-to-end smoke test
