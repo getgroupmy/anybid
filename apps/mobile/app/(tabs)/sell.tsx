@@ -15,8 +15,12 @@ import { computeFees, DEFAULT_FEES, type Category, type ListingSummary } from '@
 import { api } from '../../src/lib/api';
 import { useAuth } from '../../src/lib/auth';
 import { formatMoney, moneyInputToMinor } from '../../src/lib/format';
+import { uploadListingPhotos } from '../../src/lib/upload';
 import { Badge, Body, Button, Card, ErrorText, Field, H2, Muted, Row, Screen } from '../../src/components/ui';
 import { colors, radius, spacing } from '../../src/lib/theme';
+
+/** Matches the `images` cap in the shared createListingSchema. */
+const MAX_PHOTOS = 12;
 
 const CONDITIONS = ['NEW', 'LIKE_NEW', 'GOOD', 'FAIR', 'REFURBISHED', 'FOR_PARTS'] as const;
 const DURATIONS = [
@@ -40,6 +44,7 @@ export default function SellScreen() {
   const [buyNowPrice, setBuyNowPrice] = useState('');
   const [durationHours, setDurationHours] = useState(72);
   const [images, setImages] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -77,10 +82,27 @@ export default function SellScreen() {
       mediaTypes: ['images'],
       quality: 0.7,
       allowsMultipleSelection: true,
-      selectionLimit: 6,
+      selectionLimit: MAX_PHOTOS,
     });
-    if (!result.canceled) {
-      setImages((prev) => [...prev, ...result.assets.map((a) => a.uri)].slice(0, 8));
+    if (result.canceled) return;
+
+    const room = MAX_PHOTOS - images.length;
+    if (room <= 0) {
+      setError(`A listing can have ${MAX_PHOTOS} photos.`);
+      return;
+    }
+
+    // Upload straight away rather than at submit, so a failure surfaces while
+    // the seller is still looking at the photo they picked.
+    setUploading(true);
+    setError(null);
+    try {
+      const uploaded = await uploadListingPhotos(result.assets.slice(0, room).map((a) => a.uri));
+      setImages((prev) => [...prev, ...uploaded].slice(0, MAX_PHOTOS));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'That upload failed. Please try again.');
+    } finally {
+      setUploading(false);
     }
   }
 
@@ -99,11 +121,7 @@ export default function SellScreen() {
         kind: buyNowPrice ? 'AUCTION_WITH_BUY_NOW' : 'AUCTION',
         condition,
         quantity: 1,
-        // Local device URIs are not reachable by other clients; a real build
-        // uploads to storage first. Placeholders keep the flow honest here.
-        images: images.length
-          ? images.map((_, i) => `https://picsum.photos/seed/${Date.now()}-${i}/800/600`)
-          : [`https://picsum.photos/seed/${Date.now()}/800/600`],
+        images,
         startPrice: moneyInputToMinor(startPrice),
         reservePrice: reservePrice ? moneyInputToMinor(reservePrice) : null,
         buyNowPrice: buyNowPrice ? moneyInputToMinor(buyNowPrice) : null,
@@ -208,9 +226,17 @@ export default function SellScreen() {
             <View style={{ gap: 6 }}>
               <Text style={styles.label}>Photos</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
-                <Pressable style={styles.addPhoto} onPress={pickImage}>
-                  <Text style={{ fontSize: 22, color: colors.textMuted }}>＋</Text>
-                  <Text style={{ fontSize: 10, color: colors.textMuted }}>Add</Text>
+                <Pressable
+                  style={styles.addPhoto}
+                  onPress={pickImage}
+                  disabled={uploading || images.length >= MAX_PHOTOS}
+                >
+                  <Text style={{ fontSize: 22, color: colors.textMuted }}>
+                    {uploading ? '…' : '＋'}
+                  </Text>
+                  <Text style={{ fontSize: 10, color: colors.textMuted }}>
+                    {uploading ? 'Sending' : 'Add'}
+                  </Text>
                 </Pressable>
                 {images.map((uri) => (
                   <Pressable key={uri} onLongPress={() => setImages((p) => p.filter((x) => x !== uri))}>
@@ -218,7 +244,9 @@ export default function SellScreen() {
                   </Pressable>
                 ))}
               </ScrollView>
-              <Muted style={{ fontSize: 11 }}>Long-press a photo to remove it.</Muted>
+              <Muted style={{ fontSize: 11 }}>
+                Long-press a photo to remove it. The first is the cover.
+              </Muted>
             </View>
           </Card>
 
