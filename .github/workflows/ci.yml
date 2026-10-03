@@ -76,6 +76,11 @@ jobs:
           npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
           npm run db:seed -w @anybid/api
 
+      # These need a migrated database, so they run after the step above. They
+      # create and delete their own fixtures rather than leaning on the seed.
+      - name: Concurrency tests (bid lock, settlement claim, approval gate)
+        run: npm run test -w @anybid/api
+
       - name: End-to-end smoke test
         run: |
           npm run dev:api &
