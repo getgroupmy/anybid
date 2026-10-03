@@ -18,9 +18,38 @@ document is the whole story.
 | Play Billing | Not on AppGallery | Payments are server-side (FPX/card), not in-app purchase |
 
 Everything else in the dependency list — `expo-router`, `expo-image`,
-`expo-image-picker`, `expo-secure-store`, `expo-haptics`,
-`react-native-screens`, `react-native-safe-area-context`,
+`expo-image-picker`, `expo-image-manipulator`, `expo-secure-store`,
+`expo-haptics`, `react-native-screens`, `react-native-safe-area-context`,
 `react-native-gesture-handler` — is GMS-free and runs on Huawei unchanged.
+
+### One GMS-named manifest entry that is not a GMS dependency
+
+`expo-image-picker` contributes this to the merged manifest, and anyone
+auditing the AppGallery build will find it:
+
+```xml
+<service
+  android:name="com.google.android.gms.metadata.ModuleDependencies"
+  android:enabled="false"
+  tools:ignore="MissingClass">
+  <meta-data android:name="photopicker_activity:0:required" android:value="" />
+</service>
+```
+
+It is not a dependency and nothing links against it. On Android 11 and 12 the
+system photo picker is delivered as a Play Services module, and this disabled,
+class-less entry is how an app asks GMS to provision it. Checked against the
+library's `android/build.gradle`, whose only dependencies are `androidx.*`,
+`kotlinx-coroutines` and `com.vanniktech:android-image-cropper` — no Play
+Services artifact anywhere. On a device with no GMS the entry is inert and the
+picker falls back to the platform's document picker, so photo selection works.
+
+`expo-image-manipulator` declares one dependency, `androidx.annotation`, and
+mentions GMS nowhere.
+
+The exported Huawei bundle contains no `play-services`, `com.google.android.gms`
+or Firebase reference. The one `firebase` string a search turns up is
+`logo-firebase`, a glyph name inside `@expo/vector-icons`.
 
 ## The two channels
 
