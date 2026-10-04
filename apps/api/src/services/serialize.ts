@@ -116,8 +116,16 @@ export function bidSummary(b: AnyRow): BidSummary {
     amount: b.amount,
     createdAt: toIso(b.createdAt),
     status: b.status,
+    /**
+     * No bidderId here. The mask is the whole point of this shape, and
+     * /v1/users/:handle resolves a user id as readily as a handle — so
+     * shipping the id alongside the mask put every bidder's real name, city
+     * and join date one unauthenticated request away. The bid history and the
+     * listing page are both public, so that was every bidder on the site.
+     *
+     * Nothing in the web or mobile consoles reads it; they render `masked`.
+     */
     bidder: {
-      id: b.bidderId,
       masked: maskHandle(b.bidder?.handle ?? ''),
       avatarUrl: b.bidder?.avatarUrl ?? null,
     },

@@ -276,3 +276,75 @@ describe('editing a listing that is closed', () => {
     assert.equal(edited.statusCode, 409, 'a seller must not edit their way out of a suspension');
   });
 });
+
+/** Every string in a serialised object, so a probe need not know the shape. */
+function strings(value: unknown, found: string[] = []): string[] {
+  if (typeof value === 'string') found.push(value);
+  else if (Array.isArray(value)) for (const v of value) strings(v, found);
+  else if (value && typeof value === 'object') for (const v of Object.values(value)) strings(v, found);
+  return found;
+}
+
+describe('the bid history a visitor can see', () => {
+  it('carries nothing that resolves to the bidder', async () => {
+    const sellerId = await makeUser('mask-seller');
+    const buyerId = await makeUser('mask-buyer');
+    const listingId = await makeListing('mask', sellerId);
+    await placeBidForUser({ listingId, bidderId: buyerId, maxAmount: 150_00 });
+
+    const buyer = await prisma.user.findUniqueOrThrow({
+      where: { id: buyerId },
+      select: { handle: true, displayName: true },
+    });
+
+    // No authorisation on either of these: it is what any visitor sees. The
+    // listing page matters as much as the history endpoint, because both run
+    // through the same serialiser.
+    for (const url of [`/v1/listings/${listingId}/bids`, `/v1/listings/${listingId}`]) {
+      const res = await app.inject({ method: 'GET', url });
+      assert.equal(res.statusCode, 200, url);
+      const bids = (res.json().bids ?? res.json().listing?.bids) as unknown[];
+      assert.ok(bids?.length, `${url} should show the bid`);
+
+      const serialised = JSON.stringify(bids);
+      assert.ok(
+        !serialised.includes(buyer.handle),
+        `${url} names the bidder outright: ${serialised}`,
+      );
+      assert.ok(
+        !serialised.includes(buyerId),
+        `${url} carries the bidder's user id, which /v1/users/:id turns into a name: ${serialised}`,
+      );
+
+      // The property that actually matters, and it does not depend on which
+      // field the id arrives in: nothing a visitor is handed here may be
+      // usable to look the bidder up. /v1/users/:handle resolves an id as
+      // readily as a handle, so any id in this payload is one unauthenticated
+      // request away from a real name, a city and a join date.
+      for (const value of strings(bids)) {
+        if (!value) continue;
+        const probe = await app.inject({
+          method: 'GET',
+          url: `/v1/users/${encodeURIComponent(value)}`,
+        });
+        assert.notEqual(
+          probe.statusCode,
+          200,
+          `"${value}" from ${url} resolves to a profile: ${probe.body.slice(0, 200)}`,
+        );
+      }
+    }
+  });
+
+  it('still shows a mask, so the history is not blank', async () => {
+    const sellerId = await makeUser('mask2-seller');
+    const buyerId = await makeUser('mask2-buyer');
+    const listingId = await makeListing('mask2', sellerId);
+    await placeBidForUser({ listingId, bidderId: buyerId, maxAmount: 150_00 });
+
+    const res = await app.inject({ method: 'GET', url: `/v1/listings/${listingId}/bids` });
+    const [entry] = res.json().bids;
+    assert.match(entry.bidder.masked, /\*/, 'the mask is what the UI renders');
+    assert.equal(typeof entry.amount, 'number', 'the price is public and must stay');
+  });
+});
