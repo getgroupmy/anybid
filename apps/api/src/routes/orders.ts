@@ -4,7 +4,7 @@ import { checkoutSchema, disputeSchema, reviewSchema, shipOrderSchema } from '@a
 import { prisma } from '../db.ts';
 import { assertNotSuspended, requireAuth } from '../lib/auth.ts';
 import { conflict, forbidden, notFound } from '../lib/errors.ts';
-import { pageArgs, paginated, parseBody } from '../lib/http.ts';
+import { enumFilter, pageArgs, paginated, parseBody } from '../lib/http.ts';
 import { notify } from '../services/notifications.ts';
 import { orderDto } from '../services/serialize.ts';
 
@@ -48,7 +48,8 @@ export async function orderRoutes(app: FastifyInstance) {
     // role=buying (default) or role=selling
     const where: Prisma.OrderWhereInput =
       query.role === 'selling' ? { sellerId: auth.id } : { buyerId: auth.id };
-    if (query.status) where.status = query.status as never;
+    const status = enumFilter(query.status, Object.values(OrderStatus));
+    if (status) where.status = status;
 
     const [rows, total] = await Promise.all([
       prisma.order.findMany({

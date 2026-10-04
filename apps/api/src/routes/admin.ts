@@ -1,6 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { Prisma } from '@prisma/client';
+import {
+  CampaignStatus,
+  DisputeStatus,
+  KycStatus,
+  ListingStatus,
+  OrderStatus,
+  Prisma,
+} from '@prisma/client';
 import {
   disputeResolutionSchema,
   formatMoney,
@@ -15,7 +22,14 @@ import {
 import { prisma } from '../db.ts';
 import { requireAdmin, requireAuth, writeAudit } from '../lib/auth.ts';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.ts';
-import { clientIp, pageArgs, paginated, parseBody, parseQuery } from '../lib/http.ts';
+import {
+  clientIp,
+  enumFilter,
+  pageArgs,
+  paginated,
+  parseBody,
+  parseQuery,
+} from '../lib/http.ts';
 import { notify } from '../services/notifications.ts';
 import { getSettings, updateSettings } from '../services/settings.ts';
 import { settleListing } from '../services/settlement.ts';
@@ -316,7 +330,8 @@ export async function adminRoutes(app: FastifyInstance) {
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 25));
     const where: Prisma.ListingWhereInput = {};
-    if (query.status) where.status = query.status as never;
+    const status = enumFilter(query.status, Object.values(ListingStatus));
+    if (status) where.status = status;
     if (query.q) where.title = { contains: query.q, mode: 'insensitive' };
 
     const [rows, total] = await Promise.all([
@@ -442,7 +457,8 @@ export async function adminRoutes(app: FastifyInstance) {
     requireAdmin(req);
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 25));
-    const where = query.status ? { status: query.status as never } : {};
+    const status = enumFilter(query.status, Object.values(CampaignStatus));
+    const where = status ? { status } : {};
 
     const [rows, total] = await Promise.all([
       prisma.adCampaign.findMany({
@@ -508,7 +524,8 @@ export async function adminRoutes(app: FastifyInstance) {
     requireAdmin(req);
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 25));
-    const where = query.status ? { status: query.status as never } : {};
+    const status = enumFilter(query.status, Object.values(OrderStatus));
+    const where = status ? { status } : {};
 
     const [rows, total] = await Promise.all([
       prisma.order.findMany({
@@ -531,7 +548,10 @@ export async function adminRoutes(app: FastifyInstance) {
     requireAdmin(req);
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 25));
-    const where = query.status ? { status: query.status as never } : { status: { in: ['OPEN', 'UNDER_REVIEW'] as never } };
+    const status = enumFilter(query.status, Object.values(DisputeStatus));
+    const where = status
+      ? { status }
+      : { status: { in: [DisputeStatus.OPEN, DisputeStatus.UNDER_REVIEW] } };
 
     const [rows, total] = await Promise.all([
       prisma.dispute.findMany({
@@ -645,7 +665,7 @@ export async function adminRoutes(app: FastifyInstance) {
     requireAdmin(req);
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 25));
-    const where = { status: (query.status ?? 'PENDING') as never };
+    const where = { status: enumFilter(query.status, Object.values(KycStatus)) ?? KycStatus.PENDING };
 
     const [rows, total] = await Promise.all([
       prisma.kycSubmission.findMany({

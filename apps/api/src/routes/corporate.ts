@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { OrderStatus } from '@prisma/client';
 import { z } from 'zod';
 import {
   approvalDecisionSchema,
@@ -11,7 +12,15 @@ import {
 import { prisma } from '../db.ts';
 import { requireAuth, writeAudit } from '../lib/auth.ts';
 import { conflict, forbidden, notFound } from '../lib/errors.ts';
-import { clientIp, pageArgs, paginated, parseBody, parseQuery, slugify } from '../lib/http.ts';
+import {
+  clientIp,
+  enumFilter,
+  pageArgs,
+  paginated,
+  parseBody,
+  parseQuery,
+  slugify,
+} from '../lib/http.ts';
 import { hashPassword } from '../lib/crypto.ts';
 import { placeApprovedBid } from '../services/bidding.ts';
 import { notify } from '../services/notifications.ts';
@@ -430,7 +439,8 @@ export async function corporateRoutes(app: FastifyInstance) {
     const seat = await mySeat(auth.id);
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 20));
-    const where = { orgId: seat.orgId, ...(query.status ? { status: query.status as never } : {}) };
+    const status = enumFilter(query.status, Object.values(OrderStatus));
+    const where = { orgId: seat.orgId, ...(status ? { status } : {}) };
 
     const [rows, total] = await Promise.all([
       prisma.order.findMany({
