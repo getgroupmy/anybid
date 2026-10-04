@@ -196,3 +196,74 @@ describe('paying for an order', () => {
     assert.deepEqual(codes, [200, 409], 'the second payment must be refused');
   });
 });
+
+describe('opening a dispute', () => {
+  it('does not reopen an order that was completing as it arrived', async () => {
+    // The dispute route refuses a COMPLETED order, but it checks the status it
+    // read and then writes DISPUTED without re-stating it. A confirmation
+    // committing in between releases the seller payout — and the dispute then
+    // puts the order back to DISPUTED on top of it, where an admin resolving
+    // for the buyer pays the total out a second time.
+    //
+    // Holding the row makes that ordering certain: the dispute reads SHIPPED,
+    // blocks on the write, and the confirmation commits underneath it.
+    const { orderId, buyerId, sellerId } = await makeOrder('SHIPPED', 'dispute-race');
+    const token = tokenFor(buyerId);
+
+    let pending: Promise<Awaited<ReturnType<typeof app.inject>>> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Order" WHERE id = ${orderId} FOR UPDATE`;
+      pending = app.inject({
+        method: 'POST',
+        url: `/v1/orders/${orderId}/dispute`,
+        headers: { authorization: `Bearer ${token}` },
+        payload: { reason: 'NOT_RECEIVED', detail: 'Nothing arrived at all.' },
+      });
+      // Long enough for the dispute to read the order and block on the write.
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      // What a confirmation does, committing under the lock.
+      await tx.order.updateMany({
+        where: { id: orderId, status: 'SHIPPED' },
+        data: { status: 'COMPLETED', deliveredAt: new Date(), completedAt: new Date() },
+      });
+      await tx.user.update({
+        where: { id: sellerId },
+        data: { balance: { increment: PAYOUT } },
+      });
+    });
+
+    const raised = await (pending as Promise<Awaited<ReturnType<typeof app.inject>>>);
+    const order = await prisma.order.findUniqueOrThrow({
+      where: { id: orderId },
+      select: { status: true },
+    });
+
+    assert.equal(
+      order.status,
+      'COMPLETED',
+      `the payout was released and the order then went to ${order.status}, ` +
+        `where resolving the dispute pays the buyer as well (response ${raised.statusCode})`,
+    );
+    assert.equal(raised.statusCode, 409, 'the dispute must be refused, not absorbed');
+    const disputes = await prisma.dispute.count({ where: { orderId } });
+    assert.equal(disputes, 0, 'and no dispute should be left behind against a paid-out order');
+  });
+
+  it('refuses a dispute on an order that is already complete', async () => {
+    const { orderId, buyerId } = await makeOrder('SHIPPED', 'dispute-done');
+    const token = tokenFor(buyerId);
+    const confirmed = await app.inject({
+      method: 'POST',
+      url: `/v1/orders/${orderId}/confirm`,
+      headers: { authorization: `Bearer ${token}` },
+    });
+    assert.equal(confirmed.statusCode, 200);
+    const raised = await app.inject({
+      method: 'POST',
+      url: `/v1/orders/${orderId}/dispute`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { reason: 'NOT_RECEIVED', detail: 'Nothing arrived at all.' },
+    });
+    assert.equal(raised.statusCode, 409, 'a completed order is closed to disputes');
+  });
+});
