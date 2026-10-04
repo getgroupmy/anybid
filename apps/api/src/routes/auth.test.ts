@@ -31,6 +31,7 @@ const { hashPassword } = await import('../lib/crypto.ts');
 const { MAX_ACCOUNT_FAILURES, resetAccountFailuresForTest } = await import('../lib/throttle.ts');
 const { buildServer } = await import('../server.ts');
 const { CLIENT_IP_HEADER, PROXY_SECRET_HEADER } = await import('../lib/http.ts');
+const { resetRefreshGraceForTest } = await import('../lib/refresh-grace.ts');
 
 const RUN = randomBytes(4).toString('hex');
 const PASSWORD = 'CorrectHorseBattery1';
@@ -251,5 +252,105 @@ describe('sign-in attempts against one account', () => {
       }
     }
     assert.ok(refused, `an absent account answered differently: ${codes.join(', ')}`);
+  });
+});
+
+describe('refreshing a session', () => {
+  it('mints one session from one refresh token, however many ask at once', async () => {
+    resetRefreshGraceForTest();
+    const email2 = `rotate-${RUN}@auth.test.invalid`;
+    registered.push(email2);
+    const signUp = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      headers: from('203.0.113.31'),
+      payload: {
+        email: email2,
+        password: PASSWORD,
+        displayName: `Rotate ${RUN}`,
+        handle: `rotate${RUN}`,
+        requestRoles: [],
+      },
+    });
+    assert.equal(signUp.statusCode, 201, signUp.body);
+    const { user, tokens } = signUp.json() as {
+      user: { id: string };
+      tokens: { refreshToken: string };
+    };
+
+    const FANOUT = 12;
+    const responses = await Promise.all(
+      Array.from({ length: FANOUT }, () =>
+        app.inject({
+          method: 'POST',
+          url: '/v1/auth/refresh',
+          headers: from('203.0.113.31'),
+          payload: { refreshToken: tokens.refreshToken },
+        }),
+      ),
+    );
+
+    const live = await prisma.session.count({ where: { userId: user.id, revokedAt: null } });
+    // The one that matters. Each extra session carries its own thirty-day
+    // refresh token, and the client keeps only one of them — the rest live on
+    // invisibly. Measured at twelve before the claim became conditional.
+    assert.equal(
+      live,
+      1,
+      `one refresh token minted ${live} live sessions from ${FANOUT} simultaneous calls`,
+    );
+
+    // And the siblings must not be punished for the application's timing:
+    // the website refreshes inside the last 30s of the access token's life,
+    // so every parallel request on a page presents the same cookie.
+    const codes = responses.map((r) => r.statusCode);
+    assert.ok(
+      codes.every((c) => c === 200),
+      `a visitor saw requests fail at token-expiry time: ${codes.join(', ')}`,
+    );
+
+    const issued = new Set(
+      responses.map((r) => (r.json() as { tokens: { refreshToken: string } }).tokens.refreshToken),
+    );
+    assert.equal(issued.size, 1, 'the siblings must all be told about the same session');
+  });
+
+  it('refuses a refresh token replayed later', async () => {
+    resetRefreshGraceForTest();
+    const email3 = `replay-${RUN}@auth.test.invalid`;
+    registered.push(email3);
+    const signUp = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/register',
+      headers: from('203.0.113.32'),
+      payload: {
+        email: email3,
+        password: PASSWORD,
+        displayName: `Replay ${RUN}`,
+        handle: `replay${RUN}`,
+        requestRoles: [],
+      },
+    });
+    assert.equal(signUp.statusCode, 201, signUp.body);
+    const { tokens } = signUp.json() as { tokens: { refreshToken: string } };
+
+    const once = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      headers: from('203.0.113.32'),
+      payload: { refreshToken: tokens.refreshToken },
+    });
+    assert.equal(once.statusCode, 200);
+
+    // Past the grace window a spent token is simply spent — the tolerance for
+    // concurrent siblings must not become a tolerance for replay.
+    resetRefreshGraceForTest();
+    const again = await app.inject({
+      method: 'POST',
+      url: '/v1/auth/refresh',
+      headers: from('203.0.113.32'),
+      payload: { refreshToken: tokens.refreshToken },
+    });
+    assert.equal(again.statusCode, 401, 'a spent refresh token must not work again');
   });
 });
