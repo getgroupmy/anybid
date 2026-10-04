@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { Prisma } from '@prisma/client';
 import {
   disputeResolutionSchema,
+  formatMoney,
   kycDecisionSchema,
   moderateListingSchema,
   platformSettingsSchema,
@@ -12,7 +13,7 @@ import {
 } from '@anybid/shared';
 import { prisma } from '../db.ts';
 import { requireAdmin, requireAuth, writeAudit } from '../lib/auth.ts';
-import { conflict, forbidden, notFound } from '../lib/errors.ts';
+import { badRequest, conflict, forbidden, notFound } from '../lib/errors.ts';
 import { clientIp, pageArgs, paginated, parseBody, parseQuery } from '../lib/http.ts';
 import { notify } from '../services/notifications.ts';
 import { getSettings, updateSettings } from '../services/settings.ts';
@@ -458,7 +459,21 @@ export async function adminRoutes(app: FastifyInstance) {
       include: { order: true },
     });
     if (!dispute) throw notFound('Dispute');
-    if (dispute.status === 'RESOLVED') throw conflict('This dispute is already resolved');
+
+    // A partial refund is bounded by what the buyer actually paid. moneySchema
+    // allows up to a billion ringgit and knows nothing about this order, so
+    // without this a "partial" refund could exceed the total — and because the
+    // status below is chosen by comparing the refund against that total, it
+    // would also quietly become a full refund with change.
+    if (body.resolution === 'PARTIAL_REFUND') {
+      const amount = body.amount ?? 0;
+      if (amount <= 0) throw badRequest('A partial refund needs an amount above zero');
+      if (amount > dispute.order.total) {
+        throw badRequest(
+          `A partial refund cannot exceed the order total of ${formatMoney(dispute.order.total)}`,
+        );
+      }
+    }
 
     const refund =
       body.resolution === 'REFUND_BUYER'
@@ -468,8 +483,14 @@ export async function adminRoutes(app: FastifyInstance) {
           : 0;
 
     await prisma.$transaction(async (tx) => {
-      await tx.dispute.update({
-        where: { id: dispute.id },
+      // Claim the dispute. The read above cannot see a second admin resolving
+      // it alongside this one, and it only refused a dispute already RESOLVED
+      // — so a REJECTED one could be decided a second time, that time paying
+      // the buyer the whole order. Putting the undecided states in the
+      // where-clause closes both: exactly one resolution happens, and only
+      // from OPEN or UNDER_REVIEW.
+      const claimed = await tx.dispute.updateMany({
+        where: { id: dispute.id, status: { in: ['OPEN', 'UNDER_REVIEW'] } },
         data: {
           status: body.resolution === 'REJECTED' ? 'REJECTED' : 'RESOLVED',
           resolution: body.resolution,
@@ -478,6 +499,7 @@ export async function adminRoutes(app: FastifyInstance) {
           resolvedAt: new Date(),
         },
       });
+      if (claimed.count === 0) throw conflict('This dispute has already been decided');
       await tx.order.update({
         where: { id: dispute.orderId },
         data: {
