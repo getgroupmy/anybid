@@ -322,9 +322,17 @@ export function computeFees(hammerPrice: Money, fees: FeeSchedule = DEFAULT_FEES
   let sellerCommission = applyBps(hammerPrice, fees.sellerCommissionBps);
   sellerCommission = Math.max(sellerCommission, fees.minCommission);
   if (fees.maxCommission > 0) sellerCommission = Math.min(sellerCommission, fees.maxCommission);
+  // Commission cannot exceed what the item sold for. The floor otherwise
+  // overtakes a small hammer price, and the two sides of the breakdown then
+  // disagree: the payout clamps at zero while the platform still books the
+  // whole commission, so a one sen sale accounts for a ringgit nobody paid.
+  sellerCommission = Math.min(sellerCommission, hammerPrice);
 
   const paymentFee = applyBps(buyerTotal, fees.paymentProcessingBps) + fees.paymentFlatFee;
-  const sellerPayout = Math.max(0, hammerPrice - sellerCommission);
+  // Non-negative by the clamp above, so nothing needs flooring here.
+  const sellerPayout = hammerPrice - sellerCommission;
+  // Negative on a sale too small to cover the processor's flat fee, which is
+  // the truth: the platform is out of pocket on it.
   const platformRevenue = sellerCommission + buyerPremium - paymentFee;
 
   return {
