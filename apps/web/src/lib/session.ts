@@ -2,6 +2,7 @@ import 'server-only';
 import { cookies } from 'next/headers';
 import { AnyBidClient } from '@anybid/shared';
 import {
+  API_TIMEOUT_MS,
   API_URL,
   SESSION_COOKIE,
   decodeSession,
@@ -32,7 +33,14 @@ export async function serverClient(): Promise<AnyBidClient> {
   return new AnyBidClient({
     baseUrl: API_URL,
     token: session?.tokens.accessToken ?? null,
-    fetchImpl: (input, init) => fetch(input, { ...init, cache: 'no-store' }),
+    // Bounded: an API that accepts a connection and never answers would
+    // otherwise hold the render open indefinitely. A caller's own signal wins.
+    fetchImpl: (input, init) =>
+      fetch(input, {
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        ...init,
+        cache: 'no-store',
+      }),
   });
 }
 
