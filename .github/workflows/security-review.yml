@@ -1,11 +1,17 @@
 # Anthropic's security reviewer, run over the diff of each pull request.
 #
-# It needs a CLAUDE_API_KEY repository secret, enabled for both the Claude API
-# and Claude Code. Until that exists the job fails rather than silently passing,
-# which is the honest failure: a security check reporting nothing because it
-# never ran is worse than no check.
+# Needs a CLAUDE_API_KEY repository secret, enabled for both the Claude API and
+# Claude Code. Without it the review step is skipped and the job leaves a
+# warning saying so, rather than failing.
 #
-# Two deliberate choices:
+# That is a deliberate middle: a security check must never report "clean" when
+# it did not run, but failing hard on a missing secret reds every pull request
+# in the repository over something no code change can fix, which under a
+# never-merge-red policy stops the project. A skipped step carrying a visible
+# warning is honest without being a roadblock. Once the secret exists, a
+# genuine review failure still fails the job.
+#
+# Two further choices:
 #
 #   * The action is pinned to a commit rather than @main. It receives an API
 #     key, so what runs should not change under us without a visible diff.
@@ -16,8 +22,8 @@
 #     one input it is known to be weak to.
 #
 # Upstream also recommend setting Settings -> Actions -> "Require approval for
-# all external contributors", so a fork PR cannot run this before a maintainer
-# has looked at it.
+# all external contributors", so a fork pull request cannot run this before a
+# maintainer has looked at it.
 name: Security review
 
 on:
@@ -31,6 +37,11 @@ concurrency:
   group: security-review-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+# Lifted to env because the secrets context is not reliably available to a
+# step's `if`, while env is.
+env:
+  CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+
 jobs:
   review:
     name: Review the diff for vulnerabilities
@@ -43,7 +54,13 @@ jobs:
           # needed as well as the head.
           fetch-depth: 2
 
+      - name: Say so when there is no key to review with
+        if: env.CLAUDE_API_KEY == ''
+        run: |
+          echo "::warning title=Security review did not run::No CLAUDE_API_KEY secret is set, so this diff was not reviewed. Add one under Settings -> Secrets and variables -> Actions."
+
       - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        if: env.CLAUDE_API_KEY != ''
         with:
           comment-pr: true
           claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
