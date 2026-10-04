@@ -143,20 +143,57 @@ interface RecordEventInput {
 }
 
 /** Charges the advertiser wallet and keeps the daily rollup in step. */
+/**
+ * What one impression of a CPM campaign costs, in sen.
+ *
+ * A CPM bid is a price per thousand, so a single impression costs a fraction
+ * of a sen and cannot be billed on its own. Rounding each one independently is
+ * not a rounding error, it is the wrong price: at RM5 CPM it bills 1 sen a
+ * time, which is RM10 per thousand — double the bid. Under RM5 it rounds to
+ * nothing, so the campaign is never charged, its spend never reaches its
+ * budget, and it serves free for ever.
+ *
+ * Charging the difference between the running totals is exact instead: at any
+ * bid, a thousand impressions cost the bid, and nothing is lost or invented
+ * along the way.
+ *
+ * `impressionsAfter` counts this impression, so the first one passes 1.
+ */
+export function cpmImpressionCost(bidAmount: number, impressionsAfter: number): number {
+  if (bidAmount <= 0 || impressionsAfter <= 0) return 0;
+  return (
+    Math.floor((bidAmount * impressionsAfter) / 1000) -
+    Math.floor((bidAmount * (impressionsAfter - 1)) / 1000)
+  );
+}
+
 async function recordEvent(input: RecordEventInput): Promise<void> {
   const { campaign } = input;
-  const cost =
-    input.type === 'IMPRESSION'
-      ? campaign.pricingModel === 'CPM'
-        ? Math.round(campaign.bidAmount / 1000)
-        : 0
-      : campaign.pricingModel === 'CPC'
-        ? campaign.bidAmount
-        : 0;
-
   const date = startOfDay(new Date());
 
   await prisma.$transaction(async (tx) => {
+    // The counters move first, because a CPM impression's price depends on how
+    // many have been served. Taking the count back from the atomic increment
+    // is what makes two impressions at once bill correctly: each sees its own
+    // position in the sequence, with no lock and no lost fraction.
+    const counted = await tx.adCampaign.update({
+      where: { id: campaign.id },
+      data: {
+        impressions: input.type === 'IMPRESSION' ? { increment: 1 } : undefined,
+        clicks: input.type === 'CLICK' ? { increment: 1 } : undefined,
+      },
+      select: { impressions: true },
+    });
+
+    const cost =
+      input.type === 'IMPRESSION'
+        ? campaign.pricingModel === 'CPM'
+          ? cpmImpressionCost(campaign.bidAmount, counted.impressions)
+          : 0
+        : campaign.pricingModel === 'CPC'
+          ? campaign.bidAmount
+          : 0;
+
     await tx.adEvent.create({
       data: {
         campaignId: campaign.id,
@@ -171,11 +208,7 @@ async function recordEvent(input: RecordEventInput): Promise<void> {
 
     await tx.adCampaign.update({
       where: { id: campaign.id },
-      data: {
-        spend: { increment: cost },
-        impressions: input.type === 'IMPRESSION' ? { increment: 1 } : undefined,
-        clicks: input.type === 'CLICK' ? { increment: 1 } : undefined,
-      },
+      data: { spend: { increment: cost } },
     });
     await tx.adCreative.update({
       where: { id: input.creativeId },
@@ -267,20 +300,39 @@ export async function recordClick(slotId: string, userId: string | null): Promis
   });
   if (!impression || impression.type !== 'IMPRESSION') return null;
 
+  const clickSlot = `${slotId}:click`;
+
+  // A click already recorded for this slot is not an error. The visitor
+  // double-clicked, or their request was retried, and refusing the second one
+  // left them on an error page: the advertiser had already paid for the click
+  // and did not get the visit. Send them on instead.
+  const already = await prisma.adEvent.findUnique({
+    where: { slotId: clickSlot },
+    select: { id: true },
+  });
+  if (already) return impression.creative.ctaUrl;
+
   const campaign = await prisma.adCampaign.findUnique({
     where: { id: impression.campaignId },
     include: { advertiser: { select: { id: true, companyName: true } } },
   });
   if (!campaign) return null;
 
-  await recordEvent({
-    type: 'CLICK',
-    campaign,
-    creativeId: impression.creativeId,
-    placement: impression.placement,
-    userId,
-    slotId: `${slotId}:click`,
-  });
+  try {
+    await recordEvent({
+      type: 'CLICK',
+      campaign,
+      creativeId: impression.creativeId,
+      placement: impression.placement,
+      userId,
+      slotId: clickSlot,
+    });
+  } catch (err) {
+    // Two clicks arriving together both get past the check above; the unique
+    // slot lets exactly one be billed and the other lands here. Billed once,
+    // and both visitors still arrive.
+    if ((err as { code?: string }).code !== 'P2002') throw err;
+  }
 
   return impression.creative.ctaUrl;
 }
