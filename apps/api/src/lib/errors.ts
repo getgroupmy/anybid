@@ -33,3 +33,6 @@ export const serviceUnavailable = (message: string) =>
   new HttpError(503, 'SERVICE_UNAVAILABLE', message);
 export const tooMany = (message = 'Slow down — too many requests') =>
   new HttpError(429, 'RATE_LIMITED', message);
+/** 429 with how long to wait, which the handler turns into a Retry-After header. */
+export const tooManyRequests = (message: string, retryAfterSec: number) =>
+  new HttpError(429, 'RATE_LIMITED', message, { retryAfterSec });

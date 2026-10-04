@@ -1,5 +1,7 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { z, type ZodTypeAny } from 'zod';
+import { env } from '../env.ts';
 import { badRequest } from './errors.ts';
 
 /** Parse and validate a request body, turning zod issues into a 400 with field paths. */
@@ -42,10 +44,55 @@ export function paginated<T>(items: T[], total: number, args: PageArgs) {
   };
 }
 
+/** Headers the website's proxy uses to state the end user's address. */
+export const CLIENT_IP_HEADER = 'x-anybid-client-ip';
+export const PROXY_SECRET_HEADER = 'x-anybid-proxy-secret';
+
+/** Rejects anything that is not plainly an address, so nothing else is stored. */
+const IP_SHAPE = /^[0-9a-f.:]{3,45}$/i;
+
+/**
+ * Who made this request.
+ *
+ * This used to read the first entry of X-Forwarded-For, which is the entry
+ * furthest from us and the one any caller can invent: eight registrations went
+ * through a limit of five by naming a different address each time, and the
+ * audit log recorded addresses that were never involved. Rate limits and the
+ * audit trail both key on this, so it has to be something the caller cannot
+ * choose.
+ *
+ * Two sources, in order:
+ *
+ *   - the website's server-side proxy, which states the end user's address and
+ *     proves it is the proxy with a shared secret. Browser traffic arrives as
+ *     Vercel -> Caddy, so this is the only way the end user's address survives
+ *     the trip; without it every web visitor shares one key.
+ *   - otherwise req.ip, which Fastify derives from the X-Forwarded-For entry
+ *     appended by the nearest trusted hop, bounded by TRUST_PROXY_HOPS.
+ *
+ * X-Forwarded-For is never read here directly. Trusting it is Fastify's job,
+ * and it only does so as far as the configured hop count allows.
+ */
 export function clientIp(req: FastifyRequest): string | null {
-  const fwd = req.headers['x-forwarded-for'];
-  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0]!.trim();
+  const claimed = req.headers[CLIENT_IP_HEADER];
+  const secret = req.headers[PROXY_SECRET_HEADER];
+  if (typeof claimed === 'string' && typeof secret === 'string' && proxySecretMatches(secret)) {
+    const ip = claimed.trim();
+    if (IP_SHAPE.test(ip)) return ip;
+  }
   return req.ip ?? null;
+}
+
+function proxySecretMatches(presented: string): boolean {
+  const expected = env.proxySharedSecret;
+  // Unset means the claim is ignored, not that everyone passes.
+  if (expected === '') return false;
+  const a = Buffer.from(presented);
+  const b = Buffer.from(expected);
+  // Compared in constant time, and only once the lengths match, because
+  // timingSafeEqual throws on a length mismatch and that throw is itself a
+  // signal about the secret.
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 export function noStore(reply: FastifyReply) {

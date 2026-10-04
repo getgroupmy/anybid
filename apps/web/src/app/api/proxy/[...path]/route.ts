@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { API_URL, SESSION_COOKIE } from '@/lib/config';
 import { readSession } from '@/lib/session';
+import { clientHeaders } from '@/lib/upstream';
 
 /**
  * Server-side proxy to the AnyBid API.
@@ -19,8 +20,8 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   const contentType = req.headers.get('content-type');
   if (contentType) headers.set('content-type', contentType);
   headers.set('accept', 'application/json');
-  const forwarded = req.headers.get('x-forwarded-for');
-  if (forwarded) headers.set('x-forwarded-for', forwarded);
+  // Not the visitor's own x-forwarded-for, which they can set to anything.
+  for (const [name, value] of Object.entries(clientHeaders(req))) headers.set(name, value);
 
   let accessToken = session?.tokens.accessToken;
   let refreshed: { accessToken: string; refreshToken: string; expiresAt: number } | null = null;
@@ -28,7 +29,7 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   if (session && session.tokens.expiresAt - 30_000 < Date.now()) {
     const res = await fetch(`${API_URL}/v1/auth/refresh`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...clientHeaders(req) },
       body: JSON.stringify({ refreshToken: session.tokens.refreshToken }),
       cache: 'no-store',
     });

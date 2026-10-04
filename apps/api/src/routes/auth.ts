@@ -16,7 +16,12 @@ import {
   signAccessToken,
   verifyPassword,
 } from '../lib/crypto.ts';
-import { conflict, unauthorized } from '../lib/errors.ts';
+import { conflict, tooManyRequests, unauthorized } from '../lib/errors.ts';
+import {
+  accountRetryAfterSec,
+  clearAccountFailures,
+  recordAccountFailure,
+} from '../lib/throttle.ts';
 import { clientIp, parseBody } from '../lib/http.ts';
 import { env } from '../env.ts';
 import { sessionUser } from '../services/serialize.ts';
@@ -154,6 +159,23 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.post('/v1/auth/login', { config: { rateLimit: AUTH_LIMITS.login } }, async (req) => {
     const body = parseBody(req, loginSchema);
+
+    /**
+     * Counted against the account as well as the address.
+     *
+     * The per-IP limit above does not slow down a password list worked through
+     * one email at a time from many addresses. This does, and it tells an
+     * attacker nothing new: the key is the email they submitted, so an account
+     * that exists and one that does not answer identically here too.
+     */
+    const retryAfter = accountRetryAfterSec(body.email);
+    if (retryAfter !== null) {
+      throw tooManyRequests(
+        'Too many sign-in attempts for this account — please try again shortly',
+        retryAfter,
+      );
+    }
+
     const user = await prisma.user.findUnique({
       where: { email: body.email },
       select: { id: true, passwordHash: true, suspended: true, suspendedReason: true },
@@ -165,11 +187,14 @@ export async function authRoutes(app: FastifyInstance) {
     // which is a usable oracle on its own.
     if (!user) {
       await burnPasswordVerification(body.password);
+      recordAccountFailure(body.email);
       throw unauthorized('Email or password is incorrect');
     }
     if (!(await verifyPassword(body.password, user.passwordHash))) {
+      recordAccountFailure(body.email);
       throw unauthorized('Email or password is incorrect');
     }
+    clearAccountFailures(body.email);
     await assertNotSuspended(user.id);
     await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     return issueSession(user.id, { ip: clientIp(req), userAgent: req.headers['user-agent'] });
