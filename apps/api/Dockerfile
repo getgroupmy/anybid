@@ -53,6 +53,12 @@ USER node
 EXPOSE 4000
 ENV API_HOST=0.0.0.0 API_PORT=4000
 
+# Which commit this image was built from, reported by /health. Last, so it
+# does not invalidate the layers above on every build. Empty when the image is
+# built by hand, which /health reports as "unknown" rather than guessing.
+ARG GIT_COMMIT=""
+ENV GIT_COMMIT=$GIT_COMMIT
+
 # The API and the settlement worker share this image; the platform picks which
 # to run. Exactly one process must have the settlement loop enabled.
 CMD ["node", "apps/api/dist/src/server.js"]

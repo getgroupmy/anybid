@@ -154,6 +154,7 @@ export async function buildServer() {
     return {
       ok: true,
       service: 'anybid-api',
+      commit: env.commit,
       time: new Date().toISOString(),
       realtime: hub.stats,
     };
