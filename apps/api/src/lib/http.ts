@@ -28,10 +28,43 @@ export interface PageArgs {
   take: number;
 }
 
+/**
+ * Turns whatever arrived in `?page=` and `?perPage=` into arguments Prisma will
+ * accept.
+ *
+ * Most callers reach this through `Number(query.page ?? 1)`, and `Number('abc')`
+ * is NaN — which the clamping below used to carry straight through, because
+ * `Math.max(1, NaN)` is NaN. Prisma then refused `skip: NaN` and the request
+ * came back a 500, so `?page=x` read as a server fault rather than a typo in
+ * the caller's query. A value that is not a number is treated as absent.
+ */
 export function pageArgs(page = 1, perPage = 24): PageArgs {
-  const p = Math.max(1, Math.floor(page));
-  const pp = Math.min(100, Math.max(1, Math.floor(perPage)));
+  const p = Math.max(1, Math.floor(Number.isFinite(page) ? page : 1));
+  const pp = Math.min(100, Math.max(1, Math.floor(Number.isFinite(perPage) ? perPage : 24)));
   return { page: p, perPage: pp, skip: (p - 1) * pp, take: pp };
+}
+
+/**
+ * A `?status=` style filter, checked against the values that exist.
+ *
+ * These used to be cast into Prisma as `query.status as never`, and the cast is
+ * what made it possible: an arbitrary string reached a column typed as an enum,
+ * Prisma refused it, and a mistyped filter came back a 500 instead of being
+ * named as a bad parameter. Absent or empty means no filter, which is how every
+ * one of these routes already behaved.
+ */
+export function enumFilter<T extends string>(
+  value: unknown,
+  allowed: readonly T[],
+  field = 'status',
+): T | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string' || !allowed.includes(value as T)) {
+    throw badRequest(`Unknown ${field} — expected one of ${allowed.join(', ')}`, {
+      issues: [{ path: [field], received: String(value) }],
+    });
+  }
+  return value as T;
 }
 
 export function paginated<T>(items: T[], total: number, args: PageArgs) {

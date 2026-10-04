@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { CampaignStatus } from '@prisma/client';
 import {
   adPlacementSchema,
   createCampaignSchema,
@@ -9,7 +10,7 @@ import {
 import { prisma } from '../db.ts';
 import { requireAuth, requireRole, writeAudit } from '../lib/auth.ts';
 import { conflict, forbidden, notFound } from '../lib/errors.ts';
-import { clientIp, pageArgs, paginated, parseBody, parseQuery } from '../lib/http.ts';
+import { clientIp, enumFilter, pageArgs, paginated, parseBody, parseQuery } from '../lib/http.ts';
 import { dailySpendMap, recordClick, serveAds, startOfDay } from '../services/ads.ts';
 import { campaignDto, creativeDto } from '../services/serialize.ts';
 import { z } from 'zod';
@@ -102,9 +103,10 @@ export async function advertiserRoutes(app: FastifyInstance) {
     const query = req.query as Record<string, string>;
     const args = pageArgs(Number(query.page ?? 1), Number(query.perPage ?? 20));
 
+    const status = enumFilter(query.status, Object.values(CampaignStatus));
     const where = {
       advertiserId: advertiser.id,
-      ...(query.status ? { status: query.status as never } : {}),
+      ...(status ? { status } : {}),
     };
     const [rows, total] = await Promise.all([
       prisma.adCampaign.findMany({

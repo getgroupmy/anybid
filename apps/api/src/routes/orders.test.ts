@@ -267,3 +267,35 @@ describe('opening a dispute', () => {
     assert.equal(raised.statusCode, 409, 'a completed order is closed to disputes');
   });
 });
+
+describe('listing orders with a bad query', () => {
+  it('answers a mistyped filter with a bad request, not a server error', async () => {
+    // `?status=` was cast into Prisma as `as never`, and `?perPage=abc` became
+    // NaN and reached it as `take: NaN`. Both came back 500, so a caller's typo
+    // read as a fault on our side — and filled the error log accordingly.
+    const buyerId = await makeUser('bad-query');
+    const token = tokenFor(buyerId);
+    const get = (qs: string) =>
+      app.inject({
+        method: 'GET',
+        url: `/v1/orders${qs}`,
+        headers: { authorization: `Bearer ${token}` },
+      });
+
+    const bogus = await get('?status=bogus');
+    assert.equal(bogus.statusCode, 400, `a mistyped status answered ${bogus.statusCode}`);
+    assert.match(
+      JSON.parse(bogus.body).message,
+      /expected one of/,
+      'and it should say what the choices are',
+    );
+
+    for (const qs of ['?perPage=abc', '?page=abc', '?page=&perPage=']) {
+      const r = await get(qs);
+      assert.equal(r.statusCode, 200, `${qs} answered ${r.statusCode}: ${r.body.slice(0, 120)}`);
+    }
+
+    const ok = await get('?status=COMPLETED');
+    assert.equal(ok.statusCode, 200, 'a real status still filters');
+  });
+});

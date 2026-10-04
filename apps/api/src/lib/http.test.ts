@@ -15,7 +15,8 @@ import { describe, it } from 'node:test';
 const PROXY_SECRET = 'p'.repeat(64);
 process.env.PROXY_SHARED_SECRET = PROXY_SECRET;
 
-const { redactUrl, clientIp, CLIENT_IP_HEADER, PROXY_SECRET_HEADER } = await import('./http.ts');
+const { redactUrl, clientIp, enumFilter, pageArgs, CLIENT_IP_HEADER, PROXY_SECRET_HEADER } =
+  await import('./http.ts');
 
 /** Just enough of a request for clientIp: the headers and the peer address. */
 function request(headers: Record<string, string>, ip = '10.0.0.1') {
@@ -145,5 +146,67 @@ describe('clientIp', () => {
       ),
       '2001:db8::8a2e:370:7334',
     );
+  });
+});
+
+describe('pageArgs', () => {
+  it('reads a page and a size', () => {
+    assert.deepEqual(pageArgs(3, 10), { page: 3, perPage: 10, skip: 20, take: 10 });
+  });
+
+  it('treats a page that is not a number as absent', () => {
+    // Every caller gets here through `Number(query.page ?? 1)`, and
+    // `Number('abc')` is NaN. The clamping carried it through — `Math.max(1,
+    // NaN)` is NaN — Prisma refused `skip: NaN`, and `?page=x` came back a 500
+    // as if the server were at fault rather than the query.
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+      const byPage = pageArgs(bad, 10);
+      assert.ok(
+        Number.isInteger(byPage.skip) && Number.isInteger(byPage.take),
+        `page=${bad} produced ${JSON.stringify(byPage)}`,
+      );
+      const bySize = pageArgs(1, bad);
+      assert.ok(
+        Number.isInteger(bySize.skip) && Number.isInteger(bySize.take) && bySize.take > 0,
+        `perPage=${bad} produced ${JSON.stringify(bySize)}`,
+      );
+    }
+  });
+
+  it('still clamps the sizes it can read', () => {
+    assert.equal(pageArgs(1, 1_000).perPage, 100, 'a page size has a ceiling');
+    assert.equal(pageArgs(-5, 10).page, 1, 'there is no page zero');
+    assert.equal(pageArgs(1, -5).perPage, 1, 'nor a negative page size');
+    assert.equal(pageArgs(2.7, 10).page, 2, 'a fractional page is floored');
+  });
+});
+
+describe('enumFilter', () => {
+  const STATUSES = ['OPEN', 'CLOSED'] as const;
+
+  it('passes a value that exists', () => {
+    assert.equal(enumFilter('OPEN', STATUSES), 'OPEN');
+  });
+
+  it('treats absent and empty as no filter', () => {
+    for (const nothing of [undefined, null, '']) {
+      assert.equal(enumFilter(nothing, STATUSES), undefined, JSON.stringify(nothing));
+    }
+  });
+
+  it('names a value that does not exist instead of letting the database refuse it', () => {
+    // These were cast in as `query.status as never`, so an arbitrary string
+    // reached a column typed as an enum and the 400 arrived as a 500.
+    assert.throws(
+      () => enumFilter('bogus', STATUSES),
+      (err: unknown) => (err as { statusCode?: number }).statusCode === 400,
+      'an unknown status must be a bad request, not a server error',
+    );
+    assert.throws(() => enumFilter(['OPEN'], STATUSES), /Unknown status/, 'nor an array of them');
+    assert.throws(() => enumFilter(7, STATUSES), /Unknown status/);
+  });
+
+  it('says what the field was, so a mistyped filter is identifiable', () => {
+    assert.throws(() => enumFilter('bogus', STATUSES, 'resolution'), /Unknown resolution/);
   });
 });
