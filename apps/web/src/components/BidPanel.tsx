@@ -103,6 +103,10 @@ export function BidPanel({ listing, viewer }: Props) {
       router.push(`/login?next=/listing/${listing.slug}`);
       return;
     }
+    if (!Number.isFinite(maxAmount)) {
+      setError('That is not an amount — enter what you are willing to pay.');
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);

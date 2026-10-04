@@ -14,7 +14,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { computeFees, DEFAULT_FEES, type Category, type ListingSummary } from '@anybid/shared';
 import { api } from '../../src/lib/api';
 import { useAuth } from '../../src/lib/auth';
-import { formatMoney, moneyInputToMinor } from '../../src/lib/format';
+import { formatMoney, moneyInputToMinor, unreadableMoney } from '../../src/lib/format';
 import { uploadListingPhotos } from '../../src/lib/upload';
 import { Badge, Body, Button, Card, ErrorText, Field, H2, Muted, Row, Screen } from '../../src/components/ui';
 import { colors, radius, spacing } from '../../src/lib/theme';
@@ -113,25 +113,36 @@ export default function SellScreen() {
     }
     setBusy(true);
     setError(null);
+    const payload = {
+      title,
+      description,
+      categoryId,
+      kind: buyNowPrice ? ('AUCTION_WITH_BUY_NOW' as const) : ('AUCTION' as const),
+      condition,
+      quantity: 1,
+      images,
+      startPrice: moneyInputToMinor(startPrice),
+      reservePrice: reservePrice ? moneyInputToMinor(reservePrice) : null,
+      buyNowPrice: buyNowPrice ? moneyInputToMinor(buyNowPrice) : null,
+      durationHours,
+      shippingCost: 15_00,
+      localPickup: true,
+      antiSnipeWindowSec: 120,
+      antiSnipeExtensionSec: 120,
+      tags: [],
+    };
+
+    // An unreadable price must not be sent: JSON turns NaN into null, and null
+    // is how a reserve says there isn't one.
+    const unreadable = unreadableMoney(payload);
+    if (Object.keys(unreadable).length > 0) {
+      setError('Check the prices — one of them is not an amount.');
+      setBusy(false);
+      return;
+    }
+
     try {
-      const { listing } = await api.listings.create({
-        title,
-        description,
-        categoryId,
-        kind: buyNowPrice ? 'AUCTION_WITH_BUY_NOW' : 'AUCTION',
-        condition,
-        quantity: 1,
-        images,
-        startPrice: moneyInputToMinor(startPrice),
-        reservePrice: reservePrice ? moneyInputToMinor(reservePrice) : null,
-        buyNowPrice: buyNowPrice ? moneyInputToMinor(buyNowPrice) : null,
-        durationHours,
-        shippingCost: 15_00,
-        localPickup: true,
-        antiSnipeWindowSec: 120,
-        antiSnipeExtensionSec: 120,
-        tags: [],
-      });
+      const { listing } = await api.listings.create(payload);
       setTitle('');
       setDescription('');
       setStartPrice('');

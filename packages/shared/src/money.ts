@@ -19,6 +19,53 @@ export function toMinor(major: number | string, currency: CurrencyCode = 'MYR'):
   return Math.round(n * CURRENCY[currency].minorUnits);
 }
 
+/**
+ * Reads what someone typed into a money field, or says it is not an amount.
+ *
+ * Tolerant about presentation and strict about arithmetic. People paste
+ * "RM1,500.00" and type "1 500", and all of those are the number they mean, so
+ * currency symbols, spaces and thousands separators come out. What must not
+ * happen is the other direction: text that is not a number becoming one.
+ *
+ * The website's own parser returned 0 for anything `Number()` could not read,
+ * and zero is how this codebase spells "none" — `isReserveMet` returns true for
+ * a reserve of zero, and `computeFees` leaves commission uncapped when
+ * maxCommission is zero. So letters in a reserve box removed a seller's floor,
+ * and letters in the platform's commission cap removed the cap, in both cases
+ * with nothing said. Null is the answer for input that cannot be read, and the
+ * caller decides what to do about it.
+ */
+export function parseMoneyInput(value: string, currency: CurrencyCode = 'MYR'): Money | null {
+  const cleaned = value.replace(/[^0-9.]/g, '');
+  if (cleaned === '' || cleaned === '.') return null;
+  const n = Number(cleaned);
+  if (!Number.isFinite(n)) return null;
+  return Math.round(n * CURRENCY[currency].minorUnits);
+}
+
+/**
+ * The money fields in a payload that were typed but could not be read.
+ *
+ * NaN is deliberately not a value, but it must not be sent either, and not
+ * because the API would catch it: `JSON.stringify` turns NaN into `null`, and
+ * `null` is how a reserve, a buy-now price, a total budget and an approval
+ * threshold all say "there isn't one". So an unreadable reserve would arrive as
+ * no reserve and be accepted — the silent removal this is meant to stop,
+ * wearing a different hat.
+ *
+ * Returns one message per offending field, shaped like the API's own field
+ * errors so a form renders it the same way. Shared because both the website and
+ * the app need it, and this codebase has already learned what happens when a
+ * money helper gets copied instead.
+ */
+export function unreadableMoney(payload: Record<string, unknown>): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const [field, value] of Object.entries(payload)) {
+    if (typeof value === 'number' && Number.isNaN(value)) errors[field] = 'Enter an amount';
+  }
+  return errors;
+}
+
 export function toMajor(minor: Money, currency: CurrencyCode = 'MYR'): number {
   return minor / CURRENCY[currency].minorUnits;
 }

@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { Category } from '@anybid/shared';
 import { browserClient } from '@/lib/client';
-import { formatMoney, moneyInputToMinor } from '@/lib/format';
+import { formatMoney, moneyInputToMinor, unreadableMoney } from '@/lib/format';
 
 const PLACEMENTS = [
   ['HOME_HERO', 'Home hero banner', 'Wide banner at the top of the marketplace.'],
@@ -27,10 +27,16 @@ export function CampaignForm({ categories }: { categories: Category[] }) {
   const [bid, setBid] = useState('1.20');
   const [dailyBudget, setDailyBudget] = useState('100');
 
-  const estimated =
-    pricingModel === 'CPC'
-      ? Math.floor(moneyInputToMinor(dailyBudget) / Math.max(1, moneyInputToMinor(bid)))
-      : Math.floor((moneyInputToMinor(dailyBudget) / Math.max(1, moneyInputToMinor(bid))) * 1000);
+  // Both of these are NaN until the fields hold something readable, and an
+  // estimate of "NaN clicks a day" is worse than no estimate.
+  const bidMinor = moneyInputToMinor(bid);
+  const dailyMinor = moneyInputToMinor(dailyBudget);
+  const readable = Number.isFinite(bidMinor) && Number.isFinite(dailyMinor) && bidMinor > 0;
+  const estimated = !readable
+    ? null
+    : pricingModel === 'CPC'
+      ? Math.floor(dailyMinor / bidMinor)
+      : Math.floor((dailyMinor / bidMinor) * 1000);
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -39,26 +45,36 @@ export function CampaignForm({ categories }: { categories: Category[] }) {
     setFieldErrors({});
     const form = new FormData(e.currentTarget);
 
+    const payload = {
+      name: String(form.get('name')),
+      objective: String(form.get('objective') ?? 'TRAFFIC'),
+      pricingModel,
+      bidAmount: moneyInputToMinor(bid),
+      dailyBudget: moneyInputToMinor(dailyBudget),
+      totalBudget: form.get('totalBudget')
+        ? moneyInputToMinor(String(form.get('totalBudget')))
+        : null,
+      startsAt: new Date().toISOString(),
+      endsAt: form.get('endsAt') ? new Date(String(form.get('endsAt'))).toISOString() : null,
+      placements,
+      targetCategoryIds: categoryIds,
+      targetKeywords: String(form.get('targetKeywords') ?? '')
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
+      targetStates: [],
+    };
+
+    const unreadable = unreadableMoney(payload);
+    if (Object.keys(unreadable).length > 0) {
+      setFieldErrors(unreadable);
+      setError('Check the amounts below.');
+      setBusy(false);
+      return;
+    }
+
     try {
-      const { campaign } = await browserClient.advertiser.createCampaign({
-        name: String(form.get('name')),
-        objective: String(form.get('objective') ?? 'TRAFFIC'),
-        pricingModel,
-        bidAmount: moneyInputToMinor(bid),
-        dailyBudget: moneyInputToMinor(dailyBudget),
-        totalBudget: form.get('totalBudget')
-          ? moneyInputToMinor(String(form.get('totalBudget')))
-          : null,
-        startsAt: new Date().toISOString(),
-        endsAt: form.get('endsAt') ? new Date(String(form.get('endsAt'))).toISOString() : null,
-        placements,
-        targetCategoryIds: categoryIds,
-        targetKeywords: String(form.get('targetKeywords') ?? '')
-          .split(',')
-          .map((k) => k.trim())
-          .filter(Boolean),
-        targetStates: [],
-      });
+      const { campaign } = await browserClient.advertiser.createCampaign(payload);
 
       // A campaign is useless without a creative — add the first one inline.
       await browserClient.advertiser.addCreative(campaign.id, {
@@ -137,10 +153,15 @@ export function CampaignForm({ categories }: { categories: Category[] }) {
         </Field>
 
         <div className="rounded-lg bg-ink-100 p-3 text-sm text-ink-700">
-          At {formatMoney(moneyInputToMinor(bid))} {pricingModel} with a{' '}
-          {formatMoney(moneyInputToMinor(dailyBudget))} daily budget, you can expect roughly{' '}
-          <strong>{estimated.toLocaleString()}</strong>{' '}
-          {pricingModel === 'CPC' ? 'clicks' : 'impressions'} a day if you win the auctions.
+          {estimated === null ? (
+            'Enter a bid and a daily budget to see how far they go.'
+          ) : (
+            <>
+              At {formatMoney(bidMinor)} {pricingModel} with a {formatMoney(dailyMinor)} daily
+              budget, you can expect roughly <strong>{estimated.toLocaleString()}</strong>{' '}
+              {pricingModel === 'CPC' ? 'clicks' : 'impressions'} a day if you win the auctions.
+            </>
+          )}
         </div>
       </section>
 

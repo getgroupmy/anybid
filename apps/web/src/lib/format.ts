@@ -1,6 +1,12 @@
-import { formatMoney, formatMoneyCompact, type Money } from '@anybid/shared';
+import {
+  formatMoney,
+  formatMoneyCompact,
+  parseMoneyInput,
+  unreadableMoney,
+  type Money,
+} from '@anybid/shared';
 
-export { formatMoney, formatMoneyCompact };
+export { formatMoney, formatMoneyCompact, unreadableMoney };
 
 export function relativeTime(iso: string | Date | null | undefined): string {
   if (!iso) return '—';
@@ -42,9 +48,22 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }
 
+/**
+ * What the user typed, in sen — or NaN if it is not an amount.
+ *
+ * This used to return 0 for anything it could not read, and zero is how the
+ * codebase spells "none": a reserve of zero is no reserve, a maxCommission of
+ * zero is no commission cap. So letters in the reserve box removed a seller's
+ * floor and letters in the admin's commission cap removed the cap, both
+ * silently, because nothing downstream could tell a real zero from a failure.
+ *
+ * NaN cannot be mistaken for a value. It fails `moneySchema` at the API, which
+ * answers 400 naming the field, and it compares false against everything, so a
+ * preview that guards on `> 0` simply does not render. The one place that has
+ * to do arithmetic with it checks first.
+ */
 export function moneyInputToMinor(value: string): Money {
-  const n = Number(value.replace(/[^0-9.]/g, ''));
-  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+  return parseMoneyInput(value) ?? Number.NaN;
 }
 
 export function statusTone(status: string): string {
