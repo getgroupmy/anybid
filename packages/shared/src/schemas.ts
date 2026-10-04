@@ -16,6 +16,25 @@ export const phoneSchema = z
 
 export const moneySchema = z.number().int().nonnegative().max(1_000_000_000_00);
 
+/**
+ * A money field where zero is not a value, it is the absence of one.
+ *
+ * A reserve, a buy-now price and a bid increment are all read as "none" when
+ * they are zero or null — `isReserveMet` returns true for a reserve of zero, so
+ * an auction with one sells at any price. Accepting a zero from a caller that
+ * meant to set a number is therefore the silent removal of a seller's floor:
+ * the API answers 201, the listing reports `hasReserve: false`, and the item
+ * can sell for the first bid above the start price.
+ *
+ * The website's money parser turns anything it cannot read into zero, so a
+ * seller who types letters, or two decimal points, in the reserve box sends
+ * exactly this. `null` stays the way to say there is none.
+ */
+export const optionalMoneySchema = moneySchema
+  .refine((v) => v > 0, 'Leave this blank if there is none — zero is not an amount')
+  .optional()
+  .nullable();
+
 /* ---------------- auth ---------------- */
 
 export const registerSchema = z.object({
@@ -70,9 +89,9 @@ export const createListingSchema = z
     quantity: z.number().int().min(1).max(9999).default(1),
     images: z.array(z.string().url().max(600)).min(1, 'Add at least one photo').max(12),
     startPrice: moneySchema,
-    reservePrice: moneySchema.optional().nullable(),
-    buyNowPrice: moneySchema.optional().nullable(),
-    bidIncrement: moneySchema.optional().nullable(),
+    reservePrice: optionalMoneySchema,
+    buyNowPrice: optionalMoneySchema,
+    bidIncrement: optionalMoneySchema,
     startsAt: z.coerce.date().optional(),
     /** auction duration in hours */
     durationHours: z.number().int().min(1).max(24 * 30).default(72),
@@ -112,7 +131,7 @@ export const updateListingSchema = z.object({
   title: z.string().min(6).max(140).optional(),
   description: z.string().min(20).max(8000).optional(),
   images: z.array(z.string().url().max(600)).min(1).max(12).optional(),
-  buyNowPrice: moneySchema.optional().nullable(),
+  buyNowPrice: optionalMoneySchema,
   shippingCost: moneySchema.optional(),
   localPickup: z.boolean().optional(),
   tags: z.array(z.string().min(1).max(30)).max(15).optional(),
@@ -201,7 +220,7 @@ export const campaignFieldsSchema = z
     /** what the advertiser pays per click (CPC) or per 1000 impressions (CPM) */
     bidAmount: moneySchema.refine((v) => v > 0, 'Set a bid'),
     dailyBudget: moneySchema.refine((v) => v > 0, 'Set a daily budget'),
-    totalBudget: moneySchema.optional().nullable(),
+    totalBudget: optionalMoneySchema,
     startsAt: z.coerce.date(),
     endsAt: z.coerce.date().optional().nullable(),
     placements: z.array(adPlacementSchema).min(1),
