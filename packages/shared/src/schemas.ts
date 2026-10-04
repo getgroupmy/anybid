@@ -270,11 +270,24 @@ export const updateMemberSchema = z.object({
   active: z.boolean().optional(),
 });
 
+/**
+ * An organisation's own spending policy, which it sets for itself.
+ *
+ * Deliberately does not include creditLimit or paymentTerms. Those decide
+ * whether this organisation may take goods now and pay later, and how much of
+ * that the platform is willing to carry — the platform's risk, not the
+ * customer's preference. They live in orgCreditSchema, behind the admin
+ * console.
+ */
 export const orgBudgetSchema = z.object({
   /** period budget in minor units */
   monthlyBudget: moneySchema,
   /** bids above this need an approver, org-wide default */
   defaultApprovalThreshold: moneySchema,
+});
+
+/** What the platform is prepared to extend to an organisation. Admin only. */
+export const orgCreditSchema = z.object({
   creditLimit: moneySchema.default(0),
   paymentTerms: z.enum(['PREPAID', 'NET_7', 'NET_14', 'NET_30', 'NET_60']).default('PREPAID'),
 });

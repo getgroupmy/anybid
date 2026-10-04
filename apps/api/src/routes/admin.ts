@@ -6,6 +6,7 @@ import {
   formatMoney,
   kycDecisionSchema,
   moderateListingSchema,
+  orgCreditSchema,
   platformSettingsSchema,
   setRolesSchema,
   suspendUserSchema,
@@ -23,6 +24,7 @@ import {
   campaignDto,
   listingSummary,
   orderDto,
+  organizationDto,
   sessionUser,
 } from '../services/serialize.ts';
 
@@ -202,6 +204,55 @@ export async function adminRoutes(app: FastifyInstance) {
     });
     reply.code(204);
     return null;
+  });
+
+  /**
+   * What the platform will extend to an organisation.
+   *
+   * These two settings used to sit in the corporate console's own budget
+   * route, where the customer set them for itself — so an organisation could
+   * put itself on NET_60 terms and name its own credit ceiling. They are the
+   * platform's exposure, so they belong on this side of the line, and the
+   * decision is recorded like every other admin decision here.
+   */
+  app.patch<{ Params: { id: string } }>('/v1/admin/organizations/:id/credit', async (req) => {
+    const admin = requireAdmin(req);
+    const body = parseBody(req, orgCreditSchema.partial());
+
+    const existing = await prisma.organization.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, outstanding: true },
+    });
+    if (!existing) throw notFound('Organisation');
+
+    // Lowering a limit below what is already owed would leave the
+    // organisation over its ceiling with no way back under it except paying,
+    // which is fine — but say so rather than silently creating that state.
+    if (body.creditLimit !== undefined && body.creditLimit < existing.outstanding) {
+      throw badRequest(
+        `That organisation already owes ${formatMoney(existing.outstanding)}; ` +
+          'settle the outstanding balance before lowering the limit below it',
+      );
+    }
+
+    const organization = await prisma.organization.update({
+      where: { id: existing.id },
+      data: body,
+    });
+    const memberCount = await prisma.orgMember.count({
+      where: { orgId: organization.id, active: true },
+    });
+
+    await writeAudit({
+      actorId: admin.id,
+      action: 'org.credit.update',
+      targetType: 'organization',
+      targetId: organization.id,
+      meta: body as Record<string, unknown>,
+      ip: clientIp(req),
+    });
+
+    return { organization: organizationDto(organization, memberCount, 0) };
   });
 
   app.post<{ Params: { id: string } }>('/v1/admin/users/:id/suspend', async (req, reply) => {
