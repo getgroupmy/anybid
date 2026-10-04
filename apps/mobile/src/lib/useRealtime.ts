@@ -30,12 +30,16 @@ export function useRealtime(channels: string[], onMessage: (m: ServerMessage) =>
     };
 
     const connect = async () => {
+      // The token goes in a message, not the URL. A URL reaches every request
+      // log between here and the API, and an access token is live for fifteen
+      // minutes in each of them.
       const token = await currentAccessToken();
-      socket = new WebSocket(token ? `${WS_URL}?token=${encodeURIComponent(token)}` : WS_URL);
+      socket = new WebSocket(WS_URL);
 
       socket.onopen = () => {
         attempt = 0;
         setConnected(true);
+        if (token) send({ t: 'auth', token });
         send({ t: 'subscribe', channels: channelsKey.split(',') });
         heartbeat = setInterval(() => send({ t: 'ping' }), 25_000);
       };

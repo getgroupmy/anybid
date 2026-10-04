@@ -52,6 +52,45 @@ export function noStore(reply: FastifyReply) {
   reply.header('cache-control', 'no-store');
 }
 
+/**
+ * Query parameters whose value is a credential rather than a parameter.
+ *
+ * The one that matters today is `token`: the realtime socket accepts the
+ * access token in the URL, because a WebSocket cannot carry an Authorization
+ * header from a browser, so it arrives where request logging can see it.
+ */
+const SECRET_PARAM = /^(token|access_token|refresh_token|refresh|secret|password|signature|sig|api_key|apikey)$/i;
+
+/**
+ * A URL safe to write to a log.
+ *
+ * A logged request line is kept, shipped and read by people and services that
+ * have no business holding a live bearer token, and it outlives the token's
+ * fifteen minutes in every one of those places.
+ */
+export function redactUrl(url: string): string {
+  const split = url.indexOf('?');
+  if (split === -1) return url;
+
+  const path = url.slice(0, split);
+  const query = url.slice(split + 1);
+  if (!query) return url;
+
+  // Parsed by hand rather than with URLSearchParams, which re-encodes
+  // everything it round-trips and would rewrite URLs that hold no secret.
+  let touched = false;
+  const parts = query.split('&').map((part) => {
+    const eq = part.indexOf('=');
+    if (eq === -1) return part;
+    const name = part.slice(0, eq);
+    if (!SECRET_PARAM.test(decodeURIComponent(name))) return part;
+    touched = true;
+    return `${name}=[redacted]`;
+  });
+
+  return touched ? `${path}?${parts.join('&')}` : url;
+}
+
 /** URL-safe slug with a short random suffix so titles can repeat. */
 export function slugify(title: string, suffix: string): string {
   const base = title

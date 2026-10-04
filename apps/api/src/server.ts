@@ -1,6 +1,6 @@
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
 import rateLimit from '@fastify/rate-limit';
@@ -10,6 +10,7 @@ import { env } from './env.ts';
 import { prisma } from './db.ts';
 import { attachAuth } from './lib/auth.ts';
 import { badRequest, HttpError } from './lib/errors.ts';
+import { redactUrl } from './lib/http.ts';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_UPLOAD } from './lib/images.ts';
 import { hub } from './realtime/hub.ts';
 import { realtimeRoutes } from './realtime/routes.ts';
@@ -25,9 +26,28 @@ import { startSettlementLoop } from './services/settlement.ts';
 
 export async function buildServer() {
   const app = Fastify({
-    logger: env.isProd
-      ? { level: 'info' }
-      : { level: 'info', transport: undefined },
+    logger: {
+      level: 'info',
+      serializers: {
+        /**
+         * Fastify's default logs req.url as it arrived, query string and all.
+         * The realtime socket takes the access token as ?token=, so every
+         * connect wrote a live bearer credential into the log.
+         *
+         * This covers our own log only. Anything else in front of the API
+         * logs its own request lines — see the note on the realtime route
+         * about keeping the token out of the URL in the first place.
+         */
+        req(req: FastifyRequest) {
+          return {
+            method: req.method,
+            url: redactUrl(req.url),
+            host: req.headers.host,
+            remoteAddress: req.ip,
+          };
+        },
+      },
+    },
     trustProxy: true,
     bodyLimit: 2 * 1024 * 1024,
   });
