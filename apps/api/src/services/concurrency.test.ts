@@ -323,6 +323,97 @@ describe('closing an auction is all-or-nothing', () => {
   });
 });
 
+describe('approving a held corporate bid', () => {
+  it('leaves the request approvable when the bid itself is refused', async () => {
+    const sellerId = await makeUser('stale-seller');
+    const buyerId = await makeUser('stale-buyer');
+    const approverId = await makeUser('stale-approver');
+    const rivalId = await makeUser('stale-rival');
+    const rival2Id = await makeUser('stale-rival2');
+
+    const org = await prisma.organization.create({
+      data: {
+        name: `Stale Co ${RUN}`,
+        slug: `stale-co-${RUN}`,
+        registrationNo: `REG-STALE-${RUN}`,
+        billingEmail: `billing-stale-${RUN}@concurrency.test.invalid`,
+        defaultApprovalThreshold: 10_000_00,
+      },
+      select: { id: true },
+    });
+    made.orgs.push(org.id);
+    await prisma.orgMember.create({
+      data: { orgId: org.id, userId: approverId, orgRole: 'APPROVER' },
+    });
+    await prisma.orgMember.create({ data: { orgId: org.id, userId: buyerId, orgRole: 'BUYER' } });
+
+    const listingId = await makeListing({
+      sellerId,
+      categoryId,
+      startPrice: 1_000_00,
+      tag: 'stale',
+    });
+
+    // The buyer asks to spend more than their threshold, so it is held.
+    const held = await placeBidForUser({ listingId, bidderId: buyerId, maxAmount: 20_000_00 });
+    if (held.accepted) assert.fail('the bid should have been held for approval');
+
+    // These requests live for a day, and in a day the price moves. Two rivals
+    // are needed to move it, not one: a single large maximum leaves the price
+    // at the start price, because proxy bidding only raises it against a
+    // contender. Bidding under the leader's maximum is still a valid bid, so
+    // one rival alone would leave the held amount perfectly placeable.
+    await placeBidForUser({ listingId, bidderId: rivalId, maxAmount: 30_000_00 });
+    await placeBidForUser({ listingId, bidderId: rival2Id, maxAmount: 28_000_00 });
+
+    const moved = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { currentPrice: true },
+    });
+    assert.ok(
+      moved.currentPrice > 20_000_00,
+      `the price must have passed the held amount for this test to mean anything (got ${moved.currentPrice})`,
+    );
+
+    // So the engine must refuse it: 20,000 is no longer enough to bid.
+    await assert.rejects(
+      () => placeApprovedBid(held.approvalId, approverId),
+      'the stale amount must be refused by the engine',
+    );
+
+    const after = await prisma.approvalRequest.findUniqueOrThrow({
+      where: { id: held.approvalId },
+      select: { status: true, decidedById: true, decidedAt: true },
+    });
+
+    // The point. Recording the decision before placing the bid consumes the
+    // request even though no bid exists, and nothing but PENDING can be
+    // approved — so the buyer loses the authorisation they were granted and
+    // has to ask for it again, with no trace of why.
+    assert.equal(
+      after.status,
+      'PENDING',
+      'a refused bid must leave the request approvable, not consume it',
+    );
+    assert.equal(after.decidedById, null, 'nobody decided anything, so nobody may be recorded');
+    assert.equal(after.decidedAt, null);
+
+    // And once the amount makes sense again it goes through.
+    await prisma.approvalRequest.update({
+      where: { id: held.approvalId },
+      data: { amount: 40_000_00 },
+    });
+    const placed = await placeApprovedBid(held.approvalId, approverId);
+    assert.equal(placed.accepted, true, 'the retry must succeed');
+    const decided = await prisma.approvalRequest.findUniqueOrThrow({
+      where: { id: held.approvalId },
+      select: { status: true, decidedById: true },
+    });
+    assert.equal(decided.status, 'APPROVED');
+    assert.equal(decided.decidedById, approverId);
+  });
+});
+
 function describeRejection(r: PromiseSettledResult<unknown>): string {
   if (r.status !== 'rejected') return '';
   return r.reason instanceof Error ? r.reason.message : String(r.reason);

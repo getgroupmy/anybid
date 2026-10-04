@@ -405,21 +405,43 @@ export async function placeApprovedBid(approvalId: string, deciderId: string): P
     throw conflict('This request expired before it was approved');
   }
 
-  await prisma.approvalRequest.update({
-    where: { id: approvalId },
+  // Claim the request. The status check above is a fast path that cannot see
+  // a second approver arriving alongside this one; putting the status in the
+  // where-clause is what makes exactly one of them proceed.
+  const claimed = await prisma.approvalRequest.updateMany({
+    where: { id: approvalId, status: 'PENDING' },
     data: { status: 'APPROVED', decidedById: deciderId, decidedAt: new Date() },
   });
+  if (claimed.count === 0) throw conflict('This request has already been decided');
 
-  // The approval *is* the authorisation, so the threshold gate is skipped.
-  const result = await placeBidForUser(
-    {
-      listingId: approval.listingId,
-      bidderId: approval.requestedById,
-      maxAmount: approval.amount,
-      reference: approval.reference ?? undefined,
-    },
-    { skipApprovalGate: true },
-  );
+  let result: Outcome;
+  try {
+    // The approval *is* the authorisation, so the threshold gate is skipped.
+    result = await placeBidForUser(
+      {
+        listingId: approval.listingId,
+        bidderId: approval.requestedById,
+        maxAmount: approval.amount,
+        reference: approval.reference ?? undefined,
+      },
+      { skipApprovalGate: true },
+    );
+  } catch (err) {
+    // No bid was placed, so the request must not stay consumed.
+    //
+    // These live for a day, and in a day the price moves. The engine refusing
+    // a maximum that is no longer enough is an ordinary outcome, not a bug —
+    // but nothing except PENDING can ever be approved, so recording the
+    // decision anyway would destroy the authorisation the buyer was granted
+    // and leave them to ask for it again with no trace of why.
+    //
+    // Scoped to this call's own claim, so it can only undo what it just did.
+    await prisma.approvalRequest.updateMany({
+      where: { id: approvalId, status: 'APPROVED', decidedById: deciderId },
+      data: { status: 'PENDING', decidedById: null, decidedAt: null },
+    });
+    throw err;
+  }
 
   await prisma.bid.updateMany({
     where: { listingId: approval.listingId, bidderId: approval.requestedById, status: 'ACTIVE' },
