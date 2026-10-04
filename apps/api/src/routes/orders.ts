@@ -66,54 +66,80 @@ export async function orderRoutes(app: FastifyInstance) {
     if (order.status !== 'AWAITING_PAYMENT') throw conflict('This order is not awaiting payment');
 
     const isInvoice = body.method === 'CORPORATE_INVOICE';
-    if (isInvoice) {
-      const member = await prisma.orgMember.findUnique({
-        where: { userId: auth.id },
-        select: { org: { select: { id: true, paymentTerms: true, creditLimit: true, outstanding: true } } },
-      });
-      if (!member || member.org.paymentTerms === 'PREPAID') {
-        throw conflict('Invoice payment is not enabled for your organisation');
-      }
-      if (member.org.outstanding + order.total > member.org.creditLimit) {
-        throw conflict('This purchase would exceed your organisation credit limit');
-      }
-      await prisma.organization.update({
-        where: { id: member.org.id },
-        data: { outstanding: { increment: order.total } },
-      });
-    }
+    const providerRef = `MOCK-${Date.now().toString(36).toUpperCase()}`;
 
-    const payment = await prisma.payment.create({
-      data: {
-        orderId: order.id,
-        amount: order.total,
-        method: body.method,
-        status: 'SUCCEEDED',
-        provider: isInvoice ? 'invoice' : 'mock',
-        providerRef: `MOCK-${Date.now().toString(36).toUpperCase()}`,
-        settledAt: new Date(),
-      },
-    });
+    /**
+     * Paying is one transaction that starts by claiming the order.
+     *
+     * The status check above ran before any of this and cannot see a second
+     * payment arriving alongside it. Two requests together used to pass that
+     * guard and both go through: two SUCCEEDED payments for one order, and for
+     * an invoice, the organisation's outstanding balance incremented twice.
+     */
+    const updated = await prisma.$transaction(async (tx) => {
+      const claimed = await tx.order.updateMany({
+        where: { id: order.id, status: 'AWAITING_PAYMENT' },
+        data: {
+          status: isInvoice ? 'AWAITING_SHIPMENT' : 'PAID',
+          paymentMethod: body.method,
+          paymentRef: providerRef,
+          paidAt: new Date(),
+          shippingName: body.shippingName,
+          shippingPhone: body.shippingPhone,
+          addressLine1: body.addressLine1,
+          addressLine2: body.addressLine2 ?? null,
+          city: body.city,
+          state: body.state,
+          postcode: body.postcode,
+          country: body.country,
+          notes: body.notes ?? null,
+        },
+      });
+      if (claimed.count === 0) return null;
 
-    const updated = await prisma.order.update({
-      where: { id: order.id },
-      data: {
-        status: isInvoice ? 'AWAITING_SHIPMENT' : 'PAID',
-        paymentMethod: body.method,
-        paymentRef: payment.providerRef,
-        paidAt: new Date(),
-        shippingName: body.shippingName,
-        shippingPhone: body.shippingPhone,
-        addressLine1: body.addressLine1,
-        addressLine2: body.addressLine2 ?? null,
-        city: body.city,
-        state: body.state,
-        postcode: body.postcode,
-        country: body.country,
-        notes: body.notes ?? null,
-      },
-      include: ORDER_INCLUDE,
+      if (isInvoice) {
+        const member = await tx.orgMember.findUnique({
+          where: { userId: auth.id },
+          select: { org: { select: { id: true, paymentTerms: true, creditLimit: true } } },
+        });
+        if (!member || member.org.paymentTerms === 'PREPAID') {
+          throw conflict('Invoice payment is not enabled for your organisation');
+        }
+
+        // Lock the organisation before reading what it owes. Two invoice
+        // payments on different orders would otherwise each read the same
+        // outstanding figure, both find room under the limit, and together
+        // exceed it — the credit limit is only a limit if the check and the
+        // increment cannot interleave.
+        await tx.$queryRaw`SELECT id FROM "Organization" WHERE id = ${member.org.id} FOR UPDATE`;
+        const org = await tx.organization.findUniqueOrThrow({
+          where: { id: member.org.id },
+          select: { outstanding: true, creditLimit: true },
+        });
+        if (org.outstanding + order.total > org.creditLimit) {
+          throw conflict('This purchase would exceed your organisation credit limit');
+        }
+        await tx.organization.update({
+          where: { id: member.org.id },
+          data: { outstanding: { increment: order.total } },
+        });
+      }
+
+      await tx.payment.create({
+        data: {
+          orderId: order.id,
+          amount: order.total,
+          method: body.method,
+          status: 'SUCCEEDED',
+          provider: isInvoice ? 'invoice' : 'mock',
+          providerRef,
+          settledAt: new Date(),
+        },
+      });
+
+      return tx.order.findUniqueOrThrow({ where: { id: order.id }, include: ORDER_INCLUDE });
     });
+    if (!updated) throw conflict('This order is not awaiting payment');
 
     await notify({
       userId: order.sellerId,
@@ -135,14 +161,20 @@ export async function orderRoutes(app: FastifyInstance) {
       throw conflict('This order is not ready to ship');
     }
 
-    const updated = await prisma.order.update({
-      where: { id: order.id },
+    // Same reason as the payout below, with a smaller consequence: two
+    // requests together would otherwise each tell the buyer it had shipped.
+    const claimed = await prisma.order.updateMany({
+      where: { id: order.id, status: { in: ['PAID', 'AWAITING_SHIPMENT'] } },
       data: {
         status: 'SHIPPED',
         courier: body.courier,
         trackingNumber: body.trackingNumber,
         shippedAt: new Date(),
       },
+    });
+    if (claimed.count === 0) throw conflict('This order is not ready to ship');
+    const updated = await prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
       include: ORDER_INCLUDE,
     });
 
@@ -167,9 +199,19 @@ export async function orderRoutes(app: FastifyInstance) {
     }
 
     const updated = await prisma.$transaction(async (tx) => {
-      const o = await tx.order.update({
-        where: { id: order.id },
+      // The status check above ran before this transaction and cannot see a
+      // confirmation arriving alongside it. Re-stating it here is what makes
+      // the payout happen once: the second writer matches no row and leaves
+      // without crediting anything. Without it, two confirmations landing
+      // together each incremented the balance.
+      const claimed = await tx.order.updateMany({
+        where: { id: order.id, status: { in: ['SHIPPED', 'DELIVERED'] } },
         data: { status: 'COMPLETED', deliveredAt: new Date(), completedAt: new Date() },
+      });
+      if (claimed.count === 0) return null;
+
+      const o = await tx.order.findUniqueOrThrow({
+        where: { id: order.id },
         include: ORDER_INCLUDE,
       });
       await tx.user.update({
@@ -178,6 +220,7 @@ export async function orderRoutes(app: FastifyInstance) {
       });
       return o;
     });
+    if (!updated) throw conflict('This order has already been confirmed');
 
     await notify({
       userId: order.sellerId,
