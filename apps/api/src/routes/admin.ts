@@ -585,6 +585,23 @@ export async function adminRoutes(app: FastifyInstance) {
       }),
     ]);
 
+    /**
+     * Approving a submission sets `verified` on the person, and that badge is
+     * what a buyer reads before sending money to a stranger — so this is the
+     * admin decision most likely to be questioned after a fraud. It was the
+     * only one in this file that left no trace: roles, suspension, listing
+     * moderation, campaign decisions, dispute resolution and settings all
+     * write a row.
+     */
+    await writeAudit({
+      actorId: admin.id,
+      action: `kyc.${body.decision.toLowerCase()}`,
+      targetType: 'kyc',
+      targetId: submission.id,
+      meta: { userId: submission.userId, status },
+      ip: clientIp(req),
+    });
+
     await notify({
       userId: submission.userId,
       type: 'KYC_UPDATE',
@@ -654,22 +671,43 @@ export async function adminRoutes(app: FastifyInstance) {
       }),
     );
 
-    const pending = await prisma.kycSubmission.findFirst({
-      where: { userId: auth.id, status: 'PENDING' },
-    });
-    if (pending) throw conflict('You already have a verification in review');
+    /**
+     * One submission in review per person, and the person's status moves with
+     * it.
+     *
+     * The check for a pending submission used to sit above an unconditional
+     * create, so requests arriving together all passed it: six at once left
+     * three verifications in review for one person. Each extra row is another
+     * identity document stored and another item in the reviewer's queue for
+     * somebody they have already seen.
+     *
+     * The user row is locked rather than the submission table, because what
+     * has to be true at the end is a fact about the person. It also puts the
+     * create and their status change in one transaction, so a submission
+     * cannot exist for someone the system does not think is awaiting review.
+     */
+    const submission = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${auth.id} FOR UPDATE`;
+      const pending = await tx.kycSubmission.findFirst({
+        where: { userId: auth.id, status: 'PENDING' },
+        select: { id: true },
+      });
+      if (pending) throw conflict('You already have a verification in review');
 
-    const submission = await prisma.kycSubmission.create({
-      data: {
-        userId: auth.id,
-        docType: body.docType,
-        docNumber: body.docNumber,
-        docFrontUrl: body.docFrontUrl,
-        docBackUrl: body.docBackUrl ?? null,
-        selfieUrl: body.selfieUrl ?? null,
-      },
+      const created = await tx.kycSubmission.create({
+        data: {
+          userId: auth.id,
+          docType: body.docType,
+          docNumber: body.docNumber,
+          docFrontUrl: body.docFrontUrl,
+          docBackUrl: body.docBackUrl ?? null,
+          selfieUrl: body.selfieUrl ?? null,
+        },
+      });
+      await tx.user.update({ where: { id: auth.id }, data: { kycStatus: 'PENDING' } });
+      return created;
     });
-    await prisma.user.update({ where: { id: auth.id }, data: { kycStatus: 'PENDING' } });
+
     reply.code(201);
     return { submission };
   });

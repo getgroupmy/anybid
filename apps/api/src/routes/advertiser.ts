@@ -334,6 +334,25 @@ export async function advertiserRoutes(app: FastifyInstance) {
       return a;
     });
 
+    /**
+     * The one route that puts credit into the system, and it wrote no audit
+     * row while campaign.create did. The wallet's own ledger records the
+     * movement, but not who asked for it from where — which is what the audit
+     * log is read for.
+     *
+     * Not made idempotent here: the payment provider is stubbed (see the note
+     * in the orders route), so there is no capture reference to key on, and
+     * inventing one would mean inventing the integration.
+     */
+    await writeAudit({
+      actorId: auth.id,
+      action: 'advertiser.wallet.topup',
+      targetType: 'advertiser',
+      targetId: advertiser.id,
+      meta: { amount: body.amount, method: body.method },
+      ip: clientIp(req),
+    });
+
     return { balance: updated.balance };
   });
 
