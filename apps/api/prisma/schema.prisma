@@ -647,7 +647,6 @@ model OrgMember {
   orgRole           OrgRole @default(BUYER)
   /** null falls back to the organisation default */
   approvalThreshold Int?
-  spentThisMonth    Int     @default(0)
   active            Boolean @default(true)
   joinedAt          DateTime @default(now())
 
