@@ -45,7 +45,12 @@ interface Live {
   minimumBid: number;
   bidCount: number;
   endsAt: string | null;
-  leaderId: string | null;
+  /**
+   * Our pseudonym on this listing if we are the leader, else whoever is. The
+   * live feed carries a per-listing pseudonym rather than a user id, so this
+   * is compared with the listing's own `viewer.myRef`.
+   */
+  leaderRef: string | null;
   reserveMet: boolean;
   status: string;
 }
@@ -77,7 +82,7 @@ export default function ListingScreen() {
         minimumBid: l.minimumBid,
         bidCount: l.bidCount,
         endsAt: l.endsAt,
-        leaderId: l.viewer?.isLeading ? (user?.id ?? null) : null,
+        leaderRef: l.viewer?.isLeading ? (l.viewer?.myRef ?? null) : null,
         reserveMet: l.reserveMet,
         status: l.status,
       });
@@ -100,7 +105,7 @@ export default function ListingScreen() {
               minimumBid: message.payload.minimumBid,
               bidCount: message.payload.bidCount,
               endsAt: message.payload.endsAt,
-              leaderId: message.payload.leaderId,
+              leaderRef: message.payload.leaderRef,
               reserveMet: message.payload.reserveMet,
             }
           : prev,
@@ -140,7 +145,8 @@ export default function ListingScreen() {
 
   const isLive = live.status === 'LIVE';
   const isSeller = listing.viewer?.isSeller ?? false;
-  const isLeading = user ? live.leaderId === user.id : false;
+  const myRef = listing.viewer?.myRef ?? null;
+  const isLeading = myRef !== null && live.leaderRef === myRef;
 
   async function placeBid(maxAmount: number) {
     if (!user) {
@@ -178,7 +184,7 @@ export default function ListingScreen() {
                 minimumBid: result.minimumBid,
                 endsAt: result.endsAt,
                 reserveMet: result.reserveMet,
-                leaderId: result.isLeading ? user.id : prev.leaderId,
+                leaderRef: result.isLeading ? myRef : prev.leaderRef,
               }
             : prev,
         );

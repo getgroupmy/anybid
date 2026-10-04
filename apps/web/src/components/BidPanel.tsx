@@ -26,7 +26,12 @@ interface LiveState {
   minimumBid: number;
   bidCount: number;
   endsAt: string | null;
-  leaderId: string | null;
+  /**
+   * Our pseudonym on this listing if we are the leader, else whoever is. The
+   * live feed carries a per-listing pseudonym rather than a user id, so this
+   * is compared with `listing.viewer.myRef` and never resolved to a person.
+   */
+  leaderRef: string | null;
   reserveMet: boolean;
   status: string;
   lastEventAt: number;
@@ -44,7 +49,7 @@ export function BidPanel({ listing, viewer }: Props) {
     minimumBid: listing.minimumBid,
     bidCount: listing.bidCount,
     endsAt: listing.endsAt,
-    leaderId: listing.viewer?.isLeading ? (viewer?.id ?? null) : null,
+    leaderRef: listing.viewer?.isLeading ? (listing.viewer?.myRef ?? null) : null,
     reserveMet: listing.reserveMet,
     status: listing.status,
     lastEventAt: 0,
@@ -63,7 +68,7 @@ export function BidPanel({ listing, viewer }: Props) {
         minimumBid: message.payload.minimumBid,
         bidCount: message.payload.bidCount,
         endsAt: message.payload.endsAt,
-        leaderId: message.payload.leaderId,
+        leaderRef: message.payload.leaderRef,
         reserveMet: message.payload.reserveMet,
         lastEventAt: Date.now(),
       }));
@@ -80,7 +85,8 @@ export function BidPanel({ listing, viewer }: Props) {
   const { connected } = useRealtime([listingChannel(listing.id)], onMessage);
 
   const isSeller = listing.viewer?.isSeller ?? false;
-  const isLeading = viewer ? live.leaderId === viewer.id : false;
+  const myRef = listing.viewer?.myRef ?? null;
+  const isLeading = myRef !== null && live.leaderRef === myRef;
   const isLive = live.status === 'LIVE';
   const increment = useMemo(
     () => effectiveIncrement(live.currentPrice, listing.bidIncrement),
@@ -117,7 +123,7 @@ export function BidPanel({ listing, viewer }: Props) {
           minimumBid: result.minimumBid,
           endsAt: result.endsAt,
           reserveMet: result.reserveMet,
-          leaderId: result.isLeading ? viewer.id : prev.leaderId,
+          leaderRef: result.isLeading ? myRef : prev.leaderRef,
           lastEventAt: Date.now(),
         }));
         setNotice(

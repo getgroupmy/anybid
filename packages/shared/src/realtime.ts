@@ -25,7 +25,8 @@ export interface BidEvent {
   minimumBid: Money;
   bidCount: number;
   leaderMasked: string;
-  leaderId: string;
+  /** Keyed per-listing pseudonym: compare it with your own, never resolve it. */
+  leaderRef: string | null;
   reserveMet: boolean;
   endsAt: string;
   at: number;
@@ -43,7 +44,8 @@ export interface ClosedEvent {
   status: 'SOLD' | 'UNSOLD';
   finalPrice: Money;
   winnerMasked: string | null;
-  winnerId: string | null;
+  /** Keyed per-listing pseudonym: compare it with your own, never resolve it. */
+  winnerRef: string | null;
 }
 
 export const listingChannel = (listingId: string) => `listing:${listingId}`;

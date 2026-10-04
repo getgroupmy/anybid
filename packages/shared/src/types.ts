@@ -73,6 +73,11 @@ export interface ViewerListingState {
   isSeller: boolean;
   myMaxBid: Money | null;
   requiresApproval: boolean;
+  /**
+   * This viewer's pseudonym on this listing, so the live feed can be matched
+   * against it. Null when nobody is signed in.
+   */
+  myRef: string | null;
 }
 
 export interface ListingDetail extends ListingSummary {
