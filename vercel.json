@@ -4,6 +4,9 @@
   "installCommand": "npm install",
   "buildCommand": "npm run build -w @anybid/web",
   "outputDirectory": "apps/web/.next",
+  "git": {
+    "deploymentEnabled": false
+  },
   "github": {
     "silent": false
   }
