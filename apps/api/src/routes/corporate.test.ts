@@ -44,20 +44,43 @@ function tokenFor(userId: string, orgId: string, orgRole: string): string {
 }
 
 /** An organisation on prepaid terms with no credit, which is the default. */
-async function makeOrg(tag: string) {
+async function makeOrg(tag: string, overrides: { monthlyBudget?: number; defaultApprovalThreshold?: number } = {}) {
   const org = await prisma.organization.create({
     data: {
       name: `Org ${tag} ${RUN}`,
       slug: `org-${tag}-${RUN}`,
       registrationNo: `REG-${tag}-${RUN}`,
       billingEmail: `billing-${tag}-${RUN}@corp.test.invalid`,
-      monthlyBudget: 100_000_00,
-      defaultApprovalThreshold: 10_000_00,
+      monthlyBudget: overrides.monthlyBudget ?? 100_000_00,
+      defaultApprovalThreshold: overrides.defaultApprovalThreshold ?? 10_000_00,
     },
     select: { id: true },
   });
   made.orgs.push(org.id);
   return org.id;
+}
+
+/** A live auction closing in an hour, so anti-snipe never comes into it. */
+async function makeLiveListing(tag: string, startPrice = 100_00) {
+  const sellerId = await makeUser(`${tag}-seller`);
+  const endsAt = new Date(Date.now() + HOUR);
+  const listing = await prisma.listing.create({
+    data: {
+      slug: `${tag}-${RUN}`,
+      title: `Budget probe ${tag} ${RUN}`,
+      description: 'Fixture for the corporate budget suite.',
+      status: 'LIVE',
+      sellerId,
+      categoryId,
+      startPrice,
+      currentPrice: startPrice,
+      endsAt,
+      originalEndsAt: endsAt,
+    },
+    select: { id: true },
+  });
+  made.listings.push(listing.id);
+  return listing.id;
 }
 
 async function seat(orgId: string, tag: string, orgRole: 'OWNER' | 'ADMIN' | 'APPROVER' | 'BUYER') {
@@ -432,5 +455,127 @@ describe('what a seat has spent this month', () => {
       row.spend,
       'the team table and the spend report must agree on one number',
     );
+  });
+});
+
+describe('an organisation that has set a monthly budget', () => {
+  /** A seat whose own threshold is high, so the budget is the binding limit. */
+  async function buyerWithHighThreshold(orgId: string, tag: string) {
+    const buyer = await seat(orgId, tag, 'BUYER');
+    await prisma.orgMember.update({
+      where: { userId: buyer.userId },
+      data: { approvalThreshold: 1_000_000_00 },
+    });
+    return buyer;
+  }
+
+  const bid = (listingId: string, token: string, maxAmount: number) =>
+    app.inject({
+      method: 'POST',
+      url: `/v1/listings/${listingId}/bids`,
+      headers: { authorization: `Bearer ${token}` },
+      payload: { maxAmount },
+    });
+
+  it('holds a bid that would take the team past it, rather than letting it through', async () => {
+    // monthlyBudget was read in the bid path and compared against nothing, so
+    // a team could bid past it while the console showed a remaining figure and
+    // a progress bar that implied otherwise.
+    const orgId = await makeOrg('budget-over', { monthlyBudget: 1_000_00 });
+    const buyer = await buyerWithHighThreshold(orgId, 'budget-over');
+    const listingId = await makeLiveListing('budget-over');
+
+    const res = await bid(listingId, buyer.token, 5_000_00);
+    assert.equal(res.statusCode, 200, res.body);
+    const body = res.json() as { accepted: boolean; pendingApproval?: boolean; message?: string };
+    assert.equal(body.accepted, false, 'the bid must not be placed');
+    assert.equal(body.pendingApproval, true, 'it must be held for an approver');
+    assert.match(
+      body.message ?? '',
+      /budget/i,
+      'and say it was the budget, not the personal threshold',
+    );
+
+    const placed = await prisma.bid.count({ where: { listingId, bidderId: buyer.userId } });
+    assert.equal(placed, 0, 'no bid should exist against the listing yet');
+  });
+
+  it('lets a bid within the budget straight through', async () => {
+    const orgId = await makeOrg('budget-under', { monthlyBudget: 100_000_00 });
+    const buyer = await buyerWithHighThreshold(orgId, 'budget-under');
+    const listingId = await makeLiveListing('budget-under');
+
+    const res = await bid(listingId, buyer.token, 5_000_00);
+    assert.equal(res.statusCode, 200, res.body);
+    assert.equal((res.json() as { accepted: boolean }).accepted, true, 'it should be placed');
+  });
+
+  it('enforces nothing when no budget is set', async () => {
+    // Zero means the organisation has not set one, so the bid path must not
+    // start refusing every bid on the strength of it.
+    const orgId = await makeOrg('budget-none', { monthlyBudget: 0 });
+    const buyer = await buyerWithHighThreshold(orgId, 'budget-none');
+    const listingId = await makeLiveListing('budget-none');
+
+    const res = await bid(listingId, buyer.token, 500_000_00);
+    assert.equal((res.json() as { accepted: boolean }).accepted, true, res.body);
+  });
+
+  it('still lets an approver spend past it on their own authority', async () => {
+    // The budget gates the same way the threshold does, so the people who sign
+    // off on spend are not locked out of their own decision.
+    const orgId = await makeOrg('budget-owner', { monthlyBudget: 1_000_00 });
+    const owner = await seat(orgId, 'budget-owner', 'OWNER');
+    const listingId = await makeLiveListing('budget-owner');
+
+    const res = await bid(listingId, owner.token, 50_000_00);
+    assert.equal((res.json() as { accepted: boolean }).accepted, true, res.body);
+  });
+
+  it('counts only the difference when raising a maximum on a listing it already leads', async () => {
+    // The current price of a led auction is already committed, so charging the
+    // whole new maximum against the budget again would refuse a raise that
+    // costs the organisation almost nothing.
+    const orgId = await makeOrg('budget-raise', { monthlyBudget: 10_000_00 });
+    const buyer = await buyerWithHighThreshold(orgId, 'budget-raise');
+    const listingId = await makeLiveListing('budget-raise', 9_000_00);
+
+    const first = await bid(listingId, buyer.token, 9_000_00);
+    assert.equal((first.json() as { accepted: boolean }).accepted, true, first.body);
+
+    // Leading at 9,000 of a 10,000 budget. A maximum of 9,500 adds only 500.
+    const raise = await bid(listingId, buyer.token, 9_500_00);
+    assert.equal(
+      (raise.json() as { accepted: boolean }).accepted,
+      true,
+      `raising by 500 within a 1,000 remainder was refused: ${raise.body}`,
+    );
+  });
+
+  it('agrees with the figure the console shows', async () => {
+    // The console used to compute this itself. Two computations of one number
+    // drift, and a console that disagrees with what refuses a bid is worse
+    // than no figure at all.
+    const orgId = await makeOrg('budget-agree', { monthlyBudget: 10_000_00 });
+    const buyer = await buyerWithHighThreshold(orgId, 'budget-agree');
+    const listingId = await makeLiveListing('budget-agree', 4_000_00);
+    await bid(listingId, buyer.token, 4_000_00);
+
+    const spend = await app.inject({
+      method: 'GET',
+      url: '/v1/corporate/spend',
+      headers: { authorization: `Bearer ${buyer.token}` },
+    });
+    const totals = (spend.json() as { totals: { budget: number; committed: number; remaining: number } })
+      .totals;
+    assert.equal(totals.committed, 4_000_00, 'the led auction is committed money');
+    assert.equal(totals.remaining, 6_000_00, 'and the remainder follows from it');
+
+    // The enforcement must use that same remainder: 6,001 is over, 6,000 is not.
+    const over = await makeLiveListing('budget-agree-2');
+    const refused = await bid(over, buyer.token, 6_000_01);
+    assert.equal((refused.json() as { accepted: boolean }).accepted, false, refused.body);
+    const allowed = await bid(over, buyer.token, 6_000_00);
+    assert.equal((allowed.json() as { accepted: boolean }).accepted, true, allowed.body);
   });
 });
