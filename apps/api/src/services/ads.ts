@@ -167,11 +167,43 @@ export function cpmImpressionCost(bidAmount: number, impressionsAfter: number): 
   );
 }
 
+/**
+ * What an event may actually be charged, once the advertiser's own limits are
+ * taken into account.
+ *
+ * The eligibility filter in `serveAds` checks the wallet and both budgets, but
+ * it checks them *before* the ad goes out, and every impression it serves is a
+ * slot that can be clicked afterwards. Nothing stops those clicks arriving once
+ * the money is gone, so the nominal price is a ceiling to be clamped, not an
+ * amount to take.
+ *
+ * `balance` is the hard one: the ad wallet is prepaid, so there is no credit
+ * line to draw on and charging past it bills money the advertiser never
+ * deposited. The budgets are the advertiser's own stated ceilings, and
+ * exceeding them is the same kind of wrong even when the wallet could cover it.
+ *
+ * A clamp to zero is not a refusal: the click still goes through and the
+ * visitor is still delivered. The advertiser simply gets it for nothing, which
+ * is the right way round — the platform served the slot, so the platform wears
+ * the race.
+ *
+ * `totalRemaining` is null for a campaign with no total budget.
+ */
+export function chargeableCost(
+  nominal: number,
+  limits: { balance: number; dailyRemaining: number; totalRemaining: number | null },
+): number {
+  if (nominal <= 0) return 0;
+  let cap = Math.min(nominal, limits.balance, limits.dailyRemaining);
+  if (limits.totalRemaining !== null) cap = Math.min(cap, limits.totalRemaining);
+  return Math.max(0, cap);
+}
+
 async function recordEvent(input: RecordEventInput): Promise<void> {
   const { campaign } = input;
   const date = startOfDay(new Date());
 
-  await prisma.$transaction(async (tx) => {
+  const walletEmptied = await prisma.$transaction(async (tx) => {
     // The counters move first, because a CPM impression's price depends on how
     // many have been served. Taking the count back from the atomic increment
     // is what makes two impressions at once bill correctly: each sees its own
@@ -185,7 +217,7 @@ async function recordEvent(input: RecordEventInput): Promise<void> {
       select: { impressions: true },
     });
 
-    const cost =
+    const nominal =
       input.type === 'IMPRESSION'
         ? campaign.pricingModel === 'CPM'
           ? cpmImpressionCost(campaign.bidAmount, counted.impressions)
@@ -193,6 +225,44 @@ async function recordEvent(input: RecordEventInput): Promise<void> {
         : campaign.pricingModel === 'CPC'
           ? campaign.bidAmount
           : 0;
+
+    // The limits are read here rather than taken from the snapshot `serveAds`
+    // passed in: that snapshot is as old as the impression, which for a click
+    // may be hours, and what matters is what is left now.
+    let cost = nominal;
+    if (cost > 0) {
+      const live = await tx.adCampaign.findUniqueOrThrow({
+        where: { id: campaign.id },
+        select: {
+          spend: true,
+          dailyBudget: true,
+          totalBudget: true,
+          advertiser: { select: { balance: true } },
+        },
+      });
+      const todayStat = await tx.adDailyStat.findUnique({
+        where: { campaignId_date: { campaignId: campaign.id, date } },
+        select: { spend: true },
+      });
+      cost = chargeableCost(nominal, {
+        balance: live.advertiser.balance,
+        dailyRemaining: live.dailyBudget - (todayStat?.spend ?? 0),
+        totalRemaining: live.totalBudget === null ? null : live.totalBudget - live.spend,
+      });
+    }
+
+    // Charging comes before the event row, because the event records what was
+    // charged and the claim below is what decides it. The claim is conditional
+    // on the money still being there: two clicks arriving together both read
+    // the same balance, so a plain decrement would take it twice and overdraw.
+    // The one that loses charges nothing rather than going negative.
+    if (cost > 0) {
+      const claimed = await tx.advertiser.updateMany({
+        where: { id: campaign.advertiserId, balance: { gte: cost } },
+        data: { balance: { decrement: cost }, lifetimeSpend: { increment: cost } },
+      });
+      if (claimed.count === 0) cost = 0;
+    }
 
     await tx.adEvent.create({
       data: {
@@ -234,31 +304,68 @@ async function recordEvent(input: RecordEventInput): Promise<void> {
       },
     });
 
+    const wallet = await tx.advertiser.findUniqueOrThrow({
+      where: { id: campaign.advertiserId },
+      select: { id: true, balance: true },
+    });
+
     if (cost > 0) {
-      const advertiser = await tx.advertiser.update({
-        where: { id: campaign.advertiserId },
-        data: { balance: { decrement: cost }, lifetimeSpend: { increment: cost } },
-        select: { id: true, balance: true, userId: true },
-      });
       await tx.adWalletTx.create({
         data: {
-          advertiserId: advertiser.id,
+          advertiserId: wallet.id,
           type: 'SPEND',
           amount: -cost,
-          balanceAfter: advertiser.balance,
+          balanceAfter: wallet.balance,
           note: `${input.type} · ${campaign.name}`,
         },
       });
-      if (advertiser.balance <= 0) {
-        await tx.adCampaign.updateMany({
-          where: { advertiserId: advertiser.id, status: 'ACTIVE' },
-          data: { status: 'OUT_OF_BUDGET' },
-        });
-      }
     }
+
+    // Out of money stops everything this advertiser is running — reported out
+    // of the transaction rather than done inside it, see below.
+    return wallet.balance <= 0;
   });
 
-  // Pause a campaign that just exhausted its budget, and tell the advertiser.
+  /**
+   * An empty wallet stops every campaign the advertiser runs — out here, one
+   * row at a time, and both of those matter.
+   *
+   * Inside the transaction it deadlocked: the charge locks its own campaign's
+   * row first, then the wallet, then reached for all of them, so two campaigns
+   * billing one wallet at the same moment each waited for the other's row.
+   * Postgres broke the tie by killing one, which aborted the whole charge and
+   * handed the visitor whose click it was an error.
+   *
+   * Moving it out was not enough either, because one statement updating several
+   * rows can still cross with another doing the same and deadlock on the
+   * ordering. Taking one row per statement makes that impossible rather than
+   * unlikely: no transaction here ever holds two of these locks, so there is no
+   * cycle to be in. Each is a claim on ACTIVE, so running twice is harmless.
+   *
+   * Nothing is lost by the delay — `serveAds` reads the balance itself, so an
+   * empty wallet stops serving whether or not the status has caught up.
+   */
+  if (walletEmptied) {
+    const running = await prisma.adCampaign.findMany({
+      where: { advertiserId: campaign.advertiserId, status: 'ACTIVE' },
+      select: { id: true },
+      // A fixed order is the other half of the rule: whoever takes these rows
+      // takes them in the same sequence, so two sweeps queue instead of crossing.
+      orderBy: { id: 'asc' },
+    });
+    for (const c of running) {
+      await prisma.adCampaign.updateMany({
+        where: { id: c.id, status: 'ACTIVE' },
+        data: { status: 'OUT_OF_BUDGET' },
+      });
+    }
+  }
+
+  // Stop a campaign that just exhausted its total budget, and tell the
+  // advertiser once. The stop is a claim rather than a plain update because
+  // several events can finish at the same moment and all see it still ACTIVE;
+  // whoever takes it is the one that notifies, so the advertiser gets one
+  // message about one campaign stopping once.
   const fresh = await prisma.adCampaign.findUnique({
     where: { id: campaign.id },
     select: {
@@ -266,22 +373,23 @@ async function recordEvent(input: RecordEventInput): Promise<void> {
       name: true,
       spend: true,
       totalBudget: true,
-      status: true,
       advertiser: { select: { userId: true } },
     },
   });
-  if (fresh && fresh.totalBudget && fresh.spend >= fresh.totalBudget && fresh.status === 'ACTIVE') {
-    await prisma.adCampaign.update({
-      where: { id: fresh.id },
+  if (fresh && fresh.totalBudget && fresh.spend >= fresh.totalBudget) {
+    const stopped = await prisma.adCampaign.updateMany({
+      where: { id: fresh.id, status: 'ACTIVE' },
       data: { status: 'OUT_OF_BUDGET' },
     });
-    await notify({
-      userId: fresh.advertiser.userId,
-      type: 'CAMPAIGN_BUDGET_EXHAUSTED',
-      title: 'Campaign budget spent',
-      body: `${fresh.name} has used its total budget and stopped serving.`,
-      link: '/advertiser/campaigns',
-    });
+    if (stopped.count === 1) {
+      await notify({
+        userId: fresh.advertiser.userId,
+        type: 'CAMPAIGN_BUDGET_EXHAUSTED',
+        title: 'Campaign budget spent',
+        body: `${fresh.name} has used its total budget and stopped serving.`,
+        link: '/advertiser/campaigns',
+      });
+    }
   }
 }
 
