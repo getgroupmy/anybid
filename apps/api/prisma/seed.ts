@@ -426,7 +426,15 @@ const LISTINGS: SeedListing[] = [
   },
 ];
 
-async function main() {
+/**
+ * Rebuilds the demo marketplace from nothing.
+ *
+ * Exported because the demo deployment re-runs it on a timer (see
+ * services/demo-reset.ts) as well as from the command line. It TRUNCATEs
+ * every table first, so it is only ever called where losing the contents is
+ * the point.
+ */
+export async function seedDemoData() {
   console.log('› clearing existing data');
   await prisma.$executeRawUnsafe(`
     TRUNCATE TABLE
@@ -840,16 +848,60 @@ async function main() {
     },
   });
 
-  const [users, listings, bids, orders] = await Promise.all([
+  /**
+   * An audit trail, so the admin console's history has something in it.
+   *
+   * Everything else in the demo accumulates activity as a side effect of being
+   * seeded — bids leave bids, settlement leaves orders and notifications — but
+   * nothing writes audit rows, so that view opened empty. These use the same
+   * action names the real routes write, back-dated over the past few days so
+   * the list reads like a week of moderation rather than one timestamp.
+   */
+  console.log('› audit trail');
+  const admin = userByHandle.get('anybidadmin') ?? [...userByHandle.values()][0]!;
+  const moderated = listingIds.slice(0, 4);
+  const auditRows: Prisma.AuditLogCreateManyInput[] = [
+    { actorId: admin, action: 'settings.update', targetType: 'platform', targetId: 'platform',
+      meta: { sellerCommissionBps: 600 }, ip: '203.0.113.17', createdAt: new Date(Date.now() - 6 * DAY) },
+    ...moderated.map((l, i) => ({
+      actorId: admin,
+      action: i === 3 ? 'listing.suspend' : 'listing.approve',
+      targetType: 'listing',
+      targetId: l.id,
+      meta: i === 3 ? { reason: 'Photos did not match the description' } : {},
+      ip: '203.0.113.17',
+      createdAt: new Date(Date.now() - (5 - i * 0.5) * DAY),
+    })),
+    { actorId: admin, action: 'campaign.approve', targetType: 'campaign', targetId: campaign1.id,
+      meta: {}, ip: '203.0.113.17', createdAt: new Date(Date.now() - 3 * DAY) },
+    { actorId: admin, action: 'kyc.approve', targetType: 'kyc', targetId: 'seed-kyc-aisha',
+      meta: { status: 'APPROVED' }, ip: '203.0.113.17', createdAt: new Date(Date.now() - 2.5 * DAY) },
+    { actorId: userByHandle.get('limweisheng')!, action: 'org.create', targetType: 'organization',
+      targetId: org.id, meta: {}, ip: '198.51.100.9', createdAt: new Date(Date.now() - 2 * DAY) },
+    { actorId: admin, action: 'org.credit.update', targetType: 'organization', targetId: org.id,
+      meta: { creditLimit: 100_000_00, paymentTerms: 'NET_30' }, ip: '203.0.113.17',
+      createdAt: new Date(Date.now() - 2 * DAY + 3_600_000) },
+    { actorId: userByHandle.get('limweisheng')!, action: 'org.budget.update',
+      targetType: 'organization', targetId: org.id, meta: { monthlyBudget: 250_000_00 },
+      ip: '198.51.100.9', createdAt: new Date(Date.now() - DAY) },
+    { actorId: userByHandle.get('brandco')!, action: 'advertiser.wallet.topup',
+      targetType: 'advertiser', targetId: campaign1.advertiserId,
+      meta: { amount: 500_00, method: 'FPX' }, ip: '192.0.2.44',
+      createdAt: new Date(Date.now() - 20 * HOUR) },
+  ];
+  await prisma.auditLog.createMany({ data: auditRows, skipDuplicates: true });
+
+  const [users, listings, bids, orders, audits] = await Promise.all([
     prisma.user.count(),
     prisma.listing.count(),
     prisma.bid.count(),
     prisma.order.count(),
+    prisma.auditLog.count(),
   ]);
 
   console.log(`
 ✓ AnyBid seeded
-  ${users} users · ${listings} listings · ${bids} bids · ${orders} orders
+  ${users} users · ${listings} listings · ${bids} bids · ${orders} orders · ${audits} audit entries
 
   Sign in with password "${DEMO_PASSWORD}":
     admin@anybid.my            super admin  → Admin console
@@ -877,9 +929,18 @@ function hash(s: string): number {
   return h;
 }
 
-main()
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  })
-  .finally(() => prisma.$disconnect());
+/**
+ * Only when run directly, so importing this module does not wipe a database.
+ * `npm run db:seed` goes through here; the timer calls seedDemoData itself.
+ */
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith('seed.ts') || process.argv[1].endsWith('seed.js'))
+) {
+  seedDemoData()
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    })
+    .finally(() => prisma.$disconnect());
+}

@@ -128,6 +128,12 @@ services:
     environment:
       <<: *api-env
       SETTLEMENT_TICK_MS: ${SETTLEMENT_TICK_MS:-5000}
+      # Rebuilds the demo marketplace on a timer. DESTRUCTIVE: every account,
+      # listing and order is truncated and re-seeded each time, so set it only
+      # on a deployment whose contents exist to be thrown away. Empty or 0 is
+      # off, which is the default. 10800000 = 3 hours. It lives on the worker
+      # because there is exactly one of those, and two truncates must not race.
+      DEMO_RESET_INTERVAL_MS: ${DEMO_RESET_INTERVAL_MS:-0}
     command: ["node", "apps/api/dist/src/workers/settlement-worker.js"]
 
   # Terminates TLS for API_DOMAIN and proxies to the api service, WebSocket

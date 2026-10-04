@@ -76,6 +76,15 @@ export const env = {
    */
   proxySharedSecret: process.env.PROXY_SHARED_SECRET ?? '',
   /**
+   * How often the demo marketplace is destroyed and rebuilt. 0 = never, and
+   * that is the default everywhere.
+   *
+   * This is not a cache refresh: it TRUNCATEs every table, so every account,
+   * listing and order goes. Only set it on a deployment whose contents exist
+   * to be thrown away.
+   */
+  demoResetIntervalMs: Number(process.env.DEMO_RESET_INTERVAL_MS ?? 0),
+  /**
    * Cloudflare R2 holds listing photos. Every field is optional: with none of
    * them set the API still runs and the upload endpoint answers 503, so local
    * development and the degraded production path both stay honest rather than
@@ -112,4 +121,8 @@ if (env.proxySharedSecret !== '' && env.proxySharedSecret.length < 32) {
 
 if (!Number.isInteger(env.trustProxyHops) || env.trustProxyHops < 0) {
   throw new Error('TRUST_PROXY_HOPS must be a non-negative whole number');
+}
+
+if (!Number.isFinite(env.demoResetIntervalMs) || env.demoResetIntervalMs < 0) {
+  throw new Error('DEMO_RESET_INTERVAL_MS must be a non-negative number of milliseconds');
 }
