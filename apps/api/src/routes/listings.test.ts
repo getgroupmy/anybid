@@ -348,3 +348,102 @@ describe('the bid history a visitor can see', () => {
     assert.equal(typeof entry.amount, 'number', 'the price is public and must stay');
   });
 });
+
+/**
+ * Cancelling a listing.
+ *
+ * The guard is "an auction with bids cannot be cancelled", read from bidCount
+ * before an unconditional write. Two things slip through that: a sale which
+ * left no bids behind, and a bid arriving while the check is being made.
+ */
+describe('cancelling a listing', () => {
+  it('refuses once it has been sold, bids or no bids', async () => {
+    const sellerId = await makeUser('cancel-seller');
+    const buyerId = await makeUser('cancel-buyer');
+    const listingId = await makeListing('cancel-sold', sellerId);
+    await prisma.listing.update({
+      where: { id: listingId },
+      data: { kind: 'BUY_NOW', buyNowPrice: 200_00, quantity: 1, endsAt: null, originalEndsAt: null },
+    });
+
+    // Bought outright, which is a sale that leaves bidCount at zero — so the
+    // guard reads "no bids" and waves it through.
+    const bought = await app.inject({
+      method: 'POST',
+      url: `/v1/listings/${listingId}/buy-now`,
+      headers: { authorization: `Bearer ${tokenFor(buyerId)}` },
+      payload: { quantity: 1 },
+    });
+    assert.equal(bought.statusCode, 201, bought.body);
+
+    const cancelled = await app.inject({
+      method: 'POST',
+      url: `/v1/listings/${listingId}/cancel`,
+      headers: { authorization: `Bearer ${tokenFor(sellerId)}` },
+    });
+
+    const listing = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { status: true },
+    });
+    const orders = await prisma.order.count({ where: { listingId } });
+    assert.equal(
+      listing.status,
+      'SOLD',
+      `a sold listing was cancelled with ${orders} order(s) still against it ` +
+        `(response ${cancelled.statusCode})`,
+    );
+    assert.equal(cancelled.statusCode, 409);
+  });
+
+  it('does not cancel out from under a bid that is still committing', async () => {
+    const sellerId = await makeUser('cancel-race-seller');
+    const listingId = await makeListing('cancel-race', sellerId);
+
+    // The same ordering as the terms freeze: the cancel reads bidCount while a
+    // bid holds the row and is about to commit. Holding it makes that certain.
+    let pending: Promise<Awaited<ReturnType<typeof app.inject>>> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Listing" WHERE id = ${listingId} FOR UPDATE`;
+      pending = app.inject({
+        method: 'POST',
+        url: `/v1/listings/${listingId}/cancel`,
+        headers: { authorization: `Bearer ${tokenFor(sellerId)}` },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await tx.listing.update({
+        where: { id: listingId },
+        data: { bidCount: 1, currentPrice: 150_00 },
+      });
+    });
+
+    const res = await (pending as Promise<Awaited<ReturnType<typeof app.inject>>>);
+    const listing = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { status: true, bidCount: true },
+    });
+    assert.equal(
+      listing.status,
+      'LIVE',
+      `an auction with ${listing.bidCount} bid(s) was cancelled anyway ` +
+        `(response ${res.statusCode})`,
+    );
+    assert.equal(res.statusCode, 409);
+  });
+
+  it('still lets a seller withdraw a listing nobody has bid on', async () => {
+    const sellerId = await makeUser('cancel-ok-seller');
+    const listingId = await makeListing('cancel-ok', sellerId);
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/listings/${listingId}/cancel`,
+      headers: { authorization: `Bearer ${tokenFor(sellerId)}` },
+    });
+    assert.equal(res.statusCode, 200, res.body);
+    const listing = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { status: true },
+    });
+    assert.equal(listing.status, 'CANCELLED', 'withdrawing an unbid listing must keep working');
+  });
+});
