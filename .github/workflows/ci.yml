@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # So a deploy can be re-run without pushing a commit. Running CI by hand is
+  # the manual deploy path now: it verifies the commit and then ships it, which
+  # beats the old deploy-only workflow that could put an unverified commit live.
+  workflow_dispatch:
 
 jobs:
   verify:
@@ -92,3 +96,133 @@ jobs:
 
       - name: Build web
         run: npm run build -w @anybid/web
+
+  # Production deploys come from here rather than from Vercel's git
+  # integration, so what reaches production is a commit this workflow verified.
+  # The git trigger deploys on a push regardless of the tests — a red commit
+  # goes live under a red tick — and that is the difference this job exists to
+  # make.
+  #
+  # Only the website is deployed. The API is a long-lived Fastify server with a
+  # WebSocket hub and a five-second settlement tick, which is why it runs as a
+  # container on a VM (docker-compose.prod.yml) and not as functions here.
+  deploy:
+    name: Deploy website to Vercel
+    runs-on: ubuntu-latest
+    needs: [verify]
+    # A pull request is a commit that has not landed; it gets the checks and
+    # not the production credentials. Previews still come from Vercel's git
+    # integration.
+    if: github.event_name != 'pull_request' && github.ref_name == 'main'
+    timeout-minutes: 30
+
+    # On the job, not the workflow: a newer commit should supersede a deploy
+    # still in flight, without cancelling the older commit's tests, which are
+    # the record of whether that commit was sound.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: true
+
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.url }}
+
+    env:
+      # The secrets context is not available to a job-level `if`, so the token
+      # is lifted into env and the first step checks it there.
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the deploy credentials are present
+        id: creds
+        run: |
+          missing=""
+          [ -z "$VERCEL_TOKEN" ] && missing="$missing VERCEL_TOKEN"
+          [ -z "$VERCEL_ORG_ID" ] && missing="$missing VERCEL_ORG_ID"
+          [ -z "$VERCEL_PROJECT_ID" ] && missing="$missing VERCEL_PROJECT_ID"
+
+          if [ -z "$missing" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            # A warning named on the run summary, because the quiet version of
+            # this is genuinely misleading: a green tick on a run that deployed
+            # nothing looks exactly like a run that deployed something.
+            echo "::warning::Nothing was deployed. Missing:$missing"
+            {
+              echo "### Nothing was deployed"
+              echo
+              echo "Missing repository secrets:$missing"
+              echo
+              echo "Vercel's git integration is still enabled, so this commit"
+              echo "was deployed by that path instead. Set the secrets above to"
+              echo "move production deploys behind these checks."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ready == 'true'
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+        if: steps.creds.outputs.ready == 'true'
+
+      - name: Install the Vercel CLI
+        if: steps.creds.outputs.ready == 'true'
+        run: npm install --global vercel@latest
+
+      # Pulls the project's settings and environment variables, so the build
+      # here matches the one Vercel would have run itself.
+      - name: Pull the project settings
+        if: steps.creds.outputs.ready == 'true'
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build
+        if: steps.creds.outputs.ready == 'true'
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      # Something the deployed site can be checked against afterwards, so
+      # "did this commit actually reach production" is answerable without
+      # trusting the run's own tick. Written into the build output rather than
+      # compiled in, so it is readable without executing anything.
+      - name: Stamp the build
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          mkdir -p .vercel/output/static
+          printf '{"commit":"%s","ref":"%s","run":"%s","built_at":"%s"}\n' \
+            "$GITHUB_SHA" "$GITHUB_REF_NAME" "$GITHUB_RUN_NUMBER" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            > .vercel/output/static/build-info.json
+
+      - name: Deploy to production
+        id: deploy
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          # Retried once. A deploy that fails after the upload has finished —
+          # one lost packet talking to Vercel's API — is not a reason to leave
+          # the previous bundle live under a green tick. A retry makes a second
+          # deployment from the same prebuilt output of the same commit, so the
+          # two are identical and the alias lands on whichever succeeded.
+          for attempt in 1 2; do
+            if url=$(vercel deploy --prebuilt --prod --yes --token="$VERCEL_TOKEN"); then
+              echo "url=$url" >> "$GITHUB_OUTPUT"
+              {
+                echo "### Deployed to production"
+                echo
+                echo "$url"
+                echo
+                echo "Commit \`$GITHUB_SHA\`, verified by this run."
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "::warning::Deploy attempt $attempt failed"
+            sleep 10
+          done
+          echo "::error::The deploy failed twice; production still serves the previous bundle."
+          exit 1
