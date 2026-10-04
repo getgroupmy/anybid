@@ -14,7 +14,13 @@ export const phoneSchema = z
   .regex(/^\+?[0-9\s-]{7,20}$/, 'Enter a valid phone number')
   .optional();
 
-export const moneySchema = z.number().int().nonnegative().max(1_000_000_000_00);
+export const moneySchema = z
+  // The message matters: the website sends NaN for a money field it could not
+  // read, and "Expected number, received nan" is not something to show anyone.
+  .number({ invalid_type_error: 'Enter an amount' })
+  .int()
+  .nonnegative()
+  .max(1_000_000_000_00);
 
 /**
  * A money field where zero is not a value, it is the absence of one.

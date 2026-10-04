@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation';
 import { computeFees, DEFAULT_FEES, type Category } from '@anybid/shared';
 import { browserClient } from '@/lib/client';
 import { downscaleImage } from '@/lib/image';
-import { formatMoney, moneyInputToMinor } from '@/lib/format';
+import { formatMoney, moneyInputToMinor, unreadableMoney } from '@/lib/format';
 
 const CONDITIONS = [
   ['NEW', 'New'],
@@ -135,6 +135,14 @@ export function SellForm({ categories }: { categories: Category[] }) {
         .map((t) => t.trim())
         .filter(Boolean),
     };
+
+    const unreadable = unreadableMoney(payload);
+    if (Object.keys(unreadable).length > 0) {
+      setFieldErrors(unreadable);
+      setError('Check the amounts below.');
+      setBusy(false);
+      return;
+    }
 
     try {
       const { listing } = await browserClient.listings.create(payload);

@@ -21,11 +21,20 @@ export function InviteMemberForm({ defaultThreshold }: { defaultThreshold: numbe
     const form = new FormData(e.currentTarget);
     const threshold = String(form.get('approvalThreshold') ?? '');
 
+    const approvalThreshold = threshold === '' ? null : moneyInputToMinor(threshold);
+    if (approvalThreshold !== null && !Number.isFinite(approvalThreshold)) {
+      // Null here means "use the organisation default", so sending an
+      // unreadable figure as null would quietly grant that instead of failing.
+      setError('That approval limit is not an amount. Leave it blank for the organisation default.');
+      setBusy(false);
+      return;
+    }
+
     try {
       const result = (await browserClient.corporate.invite({
         email: String(form.get('email')),
         orgRole: String(form.get('orgRole')),
-        approvalThreshold: threshold === '' ? null : moneyInputToMinor(threshold),
+        approvalThreshold,
       })) as unknown as { temporaryPassword?: string };
 
       if (result.temporaryPassword) setTemporaryPassword(result.temporaryPassword);
@@ -106,10 +115,17 @@ export function MemberRoleEditor({
   async function save() {
     setBusy(true);
     setError(null);
+    const approvalThreshold = limit === '' ? null : moneyInputToMinor(limit);
+    if (approvalThreshold !== null && !Number.isFinite(approvalThreshold)) {
+      setError('That approval limit is not an amount. Leave it blank for the organisation default.');
+      setBusy(false);
+      return;
+    }
+
     try {
       await browserClient.corporate.updateMember(memberId, {
         orgRole: role,
-        approvalThreshold: limit === '' ? null : moneyInputToMinor(limit),
+        approvalThreshold,
       });
       setOpen(false);
       router.refresh();

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { browserClient } from '@/lib/client';
-import { formatMoney, moneyInputToMinor } from '@/lib/format';
+import { formatMoney, moneyInputToMinor, unreadableMoney } from '@/lib/format';
 
 /**
  * Your own spending policy, and what the platform has extended to you.
@@ -36,11 +36,19 @@ export function BudgetForm({
     setSaved(false);
     const form = new FormData(e.currentTarget);
 
+    const payload = {
+      monthlyBudget: moneyInputToMinor(String(form.get('monthlyBudget'))),
+      defaultApprovalThreshold: moneyInputToMinor(String(form.get('defaultApprovalThreshold'))),
+    };
+    const unreadable = unreadableMoney(payload);
+    if (Object.keys(unreadable).length > 0) {
+      setError('Those are not amounts — check the figures and try again.');
+      setBusy(false);
+      return;
+    }
+
     try {
-      await browserClient.corporate.updateBudget({
-        monthlyBudget: moneyInputToMinor(String(form.get('monthlyBudget'))),
-        defaultApprovalThreshold: moneyInputToMinor(String(form.get('defaultApprovalThreshold'))),
-      });
+      await browserClient.corporate.updateBudget(payload);
       setSaved(true);
       router.refresh();
     } catch (err) {

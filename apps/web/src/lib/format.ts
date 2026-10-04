@@ -1,4 +1,4 @@
-import { formatMoney, formatMoneyCompact, type Money } from '@anybid/shared';
+import { formatMoney, formatMoneyCompact, parseMoneyInput, type Money } from '@anybid/shared';
 
 export { formatMoney, formatMoneyCompact };
 
@@ -42,9 +42,22 @@ export function plural(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString()} ${n === 1 ? one : many}`;
 }
 
+/**
+ * What the user typed, in sen — or NaN if it is not an amount.
+ *
+ * This used to return 0 for anything it could not read, and zero is how the
+ * codebase spells "none": a reserve of zero is no reserve, a maxCommission of
+ * zero is no commission cap. So letters in the reserve box removed a seller's
+ * floor and letters in the admin's commission cap removed the cap, both
+ * silently, because nothing downstream could tell a real zero from a failure.
+ *
+ * NaN cannot be mistaken for a value. It fails `moneySchema` at the API, which
+ * answers 400 naming the field, and it compares false against everything, so a
+ * preview that guards on `> 0` simply does not render. The one place that has
+ * to do arithmetic with it checks first.
+ */
 export function moneyInputToMinor(value: string): Money {
-  const n = Number(value.replace(/[^0-9.]/g, ''));
-  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+  return parseMoneyInput(value) ?? Number.NaN;
 }
 
 export function statusTone(status: string): string {
@@ -75,4 +88,26 @@ export function statusTone(status: string): string {
     default:
       return 'bg-ink-100 text-ink-700';
   }
+}
+
+/**
+ * The money fields in a payload that were typed but could not be read.
+ *
+ * `moneyInputToMinor` answers NaN for text that is not an amount, which is
+ * deliberately not a value — but it must not be sent either, and not because
+ * the API would catch it. `JSON.stringify` turns NaN into `null`, and `null` is
+ * how a reserve, a buy-now price, a total budget and an approval threshold all
+ * say "there isn't one". So an unreadable reserve would arrive as no reserve
+ * and be accepted, which is the silent removal this is here to stop, wearing a
+ * different hat.
+ *
+ * So the form checks before it sends. Returns one message per offending field,
+ * shaped like the API's own field errors so it renders the same way.
+ */
+export function unreadableMoney(payload: Record<string, unknown>): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const [field, value] of Object.entries(payload)) {
+    if (typeof value === 'number' && Number.isNaN(value)) errors[field] = 'Enter an amount';
+  }
+  return errors;
 }

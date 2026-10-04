@@ -16,9 +16,11 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { parseMoneyInput } from './money.ts';
 import {
   createCampaignSchema,
   createListingSchema,
+  moneySchema,
   optionalMoneySchema,
   updateListingSchema,
 } from './schemas.ts';
@@ -148,5 +150,48 @@ describe('the other fields where zero means absent', () => {
     const result = createListingSchema.safeParse(listing({ startPrice: 0 }));
     assert.equal(result.success, false);
     assert.match(result.error?.issues[0]?.message ?? '', /above zero/);
+  });
+});
+
+/* ---------------- the parser that feeds those fields ---------------- */
+
+describe('parseMoneyInput', () => {
+  it('reads what people actually type', () => {
+    // Tolerant about presentation: these are all the number they mean.
+    assert.equal(parseMoneyInput('1500'), 1500_00);
+    assert.equal(parseMoneyInput('1500.00'), 1500_00);
+    assert.equal(parseMoneyInput('1,500.00'), 1500_00);
+    assert.equal(parseMoneyInput('RM1,500'), 1500_00);
+    assert.equal(parseMoneyInput('1 500'), 1500_00);
+    assert.equal(parseMoneyInput('0.50'), 50);
+    assert.equal(parseMoneyInput('0'), 0, 'a deliberate zero is still a zero');
+  });
+
+  it('rounds to the sen rather than truncating', () => {
+    // Floats: 19.99 * 100 is 1998.9999999999998.
+    assert.equal(parseMoneyInput('19.99'), 1999);
+    assert.equal(parseMoneyInput('0.29'), 29);
+    assert.equal(parseMoneyInput('0.005'), 1, 'half a sen rounds up, not away');
+  });
+
+  it('says it cannot read text that is not an amount', () => {
+    // The whole point. The website's parser used to answer 0 here, and zero is
+    // how this codebase spells "none" — no reserve, no commission cap — so
+    // letters in a money field removed the thing they were meant to set.
+    for (const bad of ['abc', '1.2.3', '', '  ', '.', 'RM', '--', 'one thousand']) {
+      assert.equal(parseMoneyInput(bad), null, `${JSON.stringify(bad)} should not read as an amount`);
+    }
+  });
+
+  it('is refused by moneySchema when it could not be read', () => {
+    // How the failure reaches the person: NaN at the API, 400 with the field
+    // named, rather than a silent zero stored as a value.
+    const result = moneySchema.safeParse(parseMoneyInput('abc') ?? Number.NaN);
+    assert.equal(result.success, false);
+    assert.equal(
+      result.error?.issues[0]?.message,
+      'Enter an amount',
+      'and the message is one a person can act on',
+    );
   });
 });
