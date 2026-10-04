@@ -14,6 +14,7 @@ import { listingPseudonym } from '../lib/crypto.ts';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.ts';
 import { hub } from '../realtime/hub.ts';
 import { notify } from './notifications.ts';
+import { additionalCommitment, orgBudgetState } from './org-budget.ts';
 
 export interface PlaceBidRequest {
   listingId: string;
@@ -308,9 +309,33 @@ async function checkCorporateApproval(req: PlaceBidRequest): Promise<PendingAppr
   if (member.orgRole === 'VIEWER') throw forbidden('Viewer seats cannot bid');
 
   const threshold = member.approvalThreshold ?? member.org.defaultApprovalThreshold;
-  if (threshold <= 0 || req.maxAmount <= threshold) return null;
+  const overThreshold = threshold > 0 && req.maxAmount > threshold;
 
-  // Approvers and owners sign off on their own spend.
+  /**
+   * The organisation's monthly budget, which until now was read here and
+   * compared against nothing: a team could bid past it without anything
+   * noticing, while the console showed a "remaining" figure and a progress bar
+   * that implied otherwise.
+   *
+   * It gates the same way the threshold does — the bid is held for an approver
+   * rather than refused — so an owner can still authorise overspend
+   * deliberately instead of having to go and edit the number mid-auction.
+   *
+   * Only read when there is a budget to enforce, so an organisation that has
+   * not set one pays nothing for this on every bid.
+   */
+  let overBudget = false;
+  let budgetShortfall = 0;
+  if (member.org.monthlyBudget > 0) {
+    const state = await orgBudgetState(member.orgId);
+    const extra = additionalCommitment(state, req.listingId, req.maxAmount);
+    overBudget = extra > state.remaining;
+    if (overBudget) budgetShortfall = extra - state.remaining;
+  }
+
+  if (!overThreshold && !overBudget) return null;
+
+  // Approvers and owners sign off on their own spend, for either reason.
   if (member.orgRole === 'OWNER' || member.orgRole === 'ADMIN' || member.orgRole === 'APPROVER') {
     return null;
   }
@@ -378,9 +403,13 @@ async function checkCorporateApproval(req: PlaceBidRequest): Promise<PendingAppr
     accepted: false,
     pendingApproval: true,
     approvalId: approval.id,
-    message: `Bids above ${formatMoney(
-      threshold,
-    )} need an approver. Your request has been sent to your organisation's approvers.`,
+    // Which ceiling it hit, because "ask an approver" is more useful when the
+    // person can see whether it was their own limit or the organisation's.
+    message: overBudget
+      ? `This bid would take ${formatMoney(budgetShortfall)} more than your ` +
+        `organisation's monthly budget allows. Your request has been sent to its approvers.`
+      : `Bids above ${formatMoney(threshold)} need an approver. Your request has been ` +
+        `sent to your organisation's approvers.`,
   };
 }
 

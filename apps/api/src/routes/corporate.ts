@@ -24,6 +24,7 @@ import {
 import { hashPassword } from '../lib/crypto.ts';
 import { placeApprovedBid } from '../services/bidding.ts';
 import { notify } from '../services/notifications.ts';
+import { orgBudgetState } from '../services/org-budget.ts';
 import { approvalDto, orderDto, organizationDto, orgMemberDto, publicUser } from '../services/serialize.ts';
 import { randomBytes } from 'node:crypto';
 
@@ -434,24 +435,18 @@ export async function corporateRoutes(app: FastifyInstance) {
       }),
     );
 
-    // Money committed but not yet won: live auctions this org is leading.
-    const leading = await prisma.listing.findMany({
-      where: {
-        status: 'LIVE',
-        leaderId: { in: members.map((m) => m.userId) },
-      },
-      select: { currentPrice: true },
-    });
-    const committed = leading.reduce((sum, l) => sum + l.currentPrice, 0);
-    const spent = rows.reduce((sum, r) => sum + r.spend, 0);
+    // The same computation the bid path enforces against, rather than a second
+    // one beside it: a console that shows a different "remaining" from the one
+    // that refuses a bid is worse than no figure at all.
+    const budget = await orgBudgetState(seat.orgId);
 
     return {
       rows,
       totals: {
-        budget: org.monthlyBudget,
-        spent,
-        committed,
-        remaining: Math.max(0, org.monthlyBudget - spent - committed),
+        budget: budget.budget,
+        spent: budget.spent,
+        committed: budget.committed,
+        remaining: budget.remaining,
         outstanding: org.outstanding,
         creditLimit: org.creditLimit,
       },
