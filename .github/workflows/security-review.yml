@@ -1,0 +1,50 @@
+# Anthropic's security reviewer, run over the diff of each pull request.
+#
+# It needs a CLAUDE_API_KEY repository secret, enabled for both the Claude API
+# and Claude Code. Until that exists the job fails rather than silently passing,
+# which is the honest failure: a security check reporting nothing because it
+# never ran is worse than no check.
+#
+# Two deliberate choices:
+#
+#   * The action is pinned to a commit rather than @main. It receives an API
+#     key, so what runs should not change under us without a visible diff.
+#
+#   * .claude is excluded. It holds skills — prompt text rather than code the
+#     marketplace runs — and upstream warn the reviewer is not hardened against
+#     prompt injection, so feeding it instruction files is pointing it at the
+#     one input it is known to be weak to.
+#
+# Upstream also recommend setting Settings -> Actions -> "Require approval for
+# all external contributors", so a fork PR cannot run this before a maintainer
+# has looked at it.
+name: Security review
+
+on:
+  pull_request:
+
+permissions:
+  pull-requests: write # to leave findings as PR comments
+  contents: read
+
+concurrency:
+  group: security-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: Review the diff for vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The action diffs against the previous commit, so one parent is
+          # needed as well as the head.
+          fetch-depth: 2
+
+      - uses: anthropics/claude-code-security-review@0c6a49f1fa56a1d472575da86a94dbc1edb78eda
+        with:
+          comment-pr: true
+          claude-api-key: ${{ secrets.CLAUDE_API_KEY }}
+          exclude-directories: .claude
