@@ -22,6 +22,30 @@ const LISTING_INCLUDE = {
   category: { select: { id: true, name: true, slug: true } },
 } as const;
 
+/**
+ * A seller may edit a listing while it is still theirs to withdraw. A closed
+ * one is the record of what was sold, and a SUSPENDED one is an admin
+ * decision the seller must not edit their way out of.
+ */
+const EDITABLE_STATUSES = ['DRAFT', 'PENDING_REVIEW', 'SCHEDULED', 'LIVE'] as const;
+
+/** Fields a bidder relied on, so they stop being the seller's to change. */
+const FROZEN_ONCE_BID = {
+  title: 'the title',
+  images: 'the photos',
+  buyNowPrice: 'the buy-now price',
+  shippingCost: 'the shipping cost',
+  localPickup: 'the pickup option',
+} as const;
+type FrozenField = keyof typeof FROZEN_ONCE_BID;
+
+function listFields(fields: FrozenField[]): string {
+  const names = fields.map((f) => FROZEN_ONCE_BID[f]);
+  const last = names.pop() as string;
+  const list = names.length > 0 ? `${names.join(', ')} and ${last}` : last;
+  return list.charAt(0).toUpperCase() + list.slice(1);
+}
+
 /** Loads the per-viewer flags (watching / leading / needs approval) in one pass. */
 async function viewerContext(
   userId: string | null | undefined,
@@ -248,17 +272,66 @@ export async function listingRoutes(app: FastifyInstance) {
     });
     if (!existing) throw notFound('Listing');
     if (existing.sellerId !== auth.id) throw forbidden('This is not your listing');
-    // Once someone has bid, the terms of the auction are fixed.
-    if (existing.bidCount > 0 && (body.buyNowPrice !== undefined)) {
-      throw conflict('Pricing cannot change once bidding has started');
+    if (!(EDITABLE_STATUSES as readonly string[]).includes(existing.status)) {
+      throw conflict('A listing that is no longer open cannot be edited');
     }
 
-    const listing = await prisma.listing.update({
+    const data = {
+      ...body,
+      ...(body.tags ? { tags: body.tags.map((t) => t.toLowerCase()) } : {}),
+    };
+    const frozen = (Object.keys(FROZEN_ONCE_BID) as FrozenField[]).filter(
+      (f) => body[f] !== undefined,
+    );
+
+    /**
+     * Once someone has bid, the terms are fixed.
+     *
+     * A bid cannot be retracted anywhere in this system, so whatever a bidder
+     * agreed to is what they are held to. The shipping cost is the sharp one:
+     * it is added straight onto the winner's order total, and settlement reads
+     * the figure that is on the listing when it closes — so a listing
+     * advertised with free shipping could be edited to charge RM100,000 for
+     * postage after the bids were in. The title and the photos are the
+     * identity of the goods, and the record a dispute is later judged on.
+     *
+     * This reads bidCount under the same row lock the bid path holds, rather
+     * than before it. Checking it outside the lock reads the value a bid
+     * transaction has not committed yet: the bid holds the row from before it
+     * increments bidCount until it commits, so an edit alongside it sees zero
+     * bids, writes, and the bid lands on top of the new terms. Waiting on the
+     * lock orders the two — either the bid commits and the edit is refused
+     * below, or the edit commits first and the bidder bids on what they see.
+     * Removing just this SELECT, keeping the check, fails the in-flight test.
+     */
+    if (frozen.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM "Listing" WHERE id = ${req.params.id} FOR UPDATE`;
+        const locked = await tx.listing.findUnique({
+          where: { id: req.params.id },
+          select: { bidCount: true, status: true },
+        });
+        if (!locked) throw notFound('Listing');
+        if (!(EDITABLE_STATUSES as readonly string[]).includes(locked.status)) {
+          throw conflict('A listing that is no longer open cannot be edited');
+        }
+        if (locked.bidCount > 0) {
+          throw conflict(`${listFields(frozen)} cannot change once bidding has started`);
+        }
+        await tx.listing.update({ where: { id: req.params.id }, data });
+      });
+    } else {
+      // Nothing here is a term of the sale, so it needs no lock — only the
+      // status re-check, in case the auction closed a moment ago.
+      const applied = await prisma.listing.updateMany({
+        where: { id: req.params.id, sellerId: auth.id, status: { in: [...EDITABLE_STATUSES] } },
+        data,
+      });
+      if (applied.count === 0) throw conflict('A listing that is no longer open cannot be edited');
+    }
+
+    const listing = await prisma.listing.findUniqueOrThrow({
       where: { id: req.params.id },
-      data: {
-        ...body,
-        ...(body.tags ? { tags: body.tags.map((t) => t.toLowerCase()) } : {}),
-      },
       include: LISTING_INCLUDE,
     });
     return { listing: listingDetail(listing) };
