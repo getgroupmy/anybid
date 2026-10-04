@@ -13,7 +13,7 @@ import { assertNotSuspended, requireAuth, writeAudit } from '../lib/auth.ts';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.ts';
 import { clientIp, pageArgs, paginated, parseBody, parseQuery, slugify } from '../lib/http.ts';
 import { placeBidForUser } from '../services/bidding.ts';
-import { createOrderForSale } from '../services/orders.ts';
+import { announceSale, createOrderForSale } from '../services/orders.ts';
 import { getSettings } from '../services/settings.ts';
 import { bidSummary, listingDetail, listingSummary, orderDto, type ViewerContext } from '../services/serialize.ts';
 
@@ -395,20 +395,28 @@ export async function listingRoutes(app: FastifyInstance) {
           ...(remaining <= 0 ? { status: 'SOLD', closedAt: new Date() } : {}),
         },
       });
-      return { listing, quantity: body.quantity };
+
+      // The order is written here, inside the lock, not after it. Taking the
+      // stock and recording the sale in separate transactions means a failure
+      // between them consumes the quantity — marking the listing SOLD when it
+      // was the last one — with no order to show for it. Nothing retries that,
+      // and the stock is simply gone.
+      const orderInput = {
+        listingId: listing.id,
+        buyerId: auth.id,
+        sellerId: listing.sellerId,
+        hammerPrice: listing.buyNowPrice! * body.quantity,
+        quantity: body.quantity,
+        shippingCost: listing.shippingCost,
+      };
+      return { order: await createOrderForSale(orderInput, tx), orderInput };
     });
 
-    const created = await createOrderForSale({
-      listingId: order.listing.id,
-      buyerId: auth.id,
-      sellerId: order.listing.sellerId,
-      hammerPrice: order.listing.buyNowPrice! * order.quantity,
-      quantity: order.quantity,
-      shippingCost: order.listing.shippingCost,
-    });
+    // Only once it has committed.
+    await announceSale(order.order, order.orderInput);
 
     const full = await prisma.order.findUniqueOrThrow({
-      where: { id: created.id },
+      where: { id: order.order.id },
       include: {
         listing: { include: LISTING_INCLUDE },
         buyer: true,

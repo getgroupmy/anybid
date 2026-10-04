@@ -1,5 +1,5 @@
 import { computeFees, formatMoney, type Money } from '@anybid/shared';
-import { prisma } from '../db.ts';
+import { prisma, type Tx } from '../db.ts';
 import { randomReference } from '../lib/crypto.ts';
 import { getSettings } from './settings.ts';
 import { notify } from './notifications.ts';
@@ -19,12 +19,24 @@ export interface CreateOrderInput {
   invoiced?: boolean;
 }
 
-export async function createOrderForSale(input: CreateOrderInput) {
-  const settings = await getSettings();
+/**
+ * Records a sale.
+ *
+ * Takes the caller's transaction, because the order and whatever closed the
+ * listing have to commit together. Written on its own it can fail after the
+ * listing is already marked sold, and nothing retries: settlement only looks
+ * at LIVE listings, so the auction stays closed with nothing to pay.
+ *
+ * Telling people about it is `announceSale`, deliberately separate — a
+ * notification must not be sent for a sale that did not commit, and is not
+ * worth rolling one back for.
+ */
+export async function createOrderForSale(input: CreateOrderInput, tx: Tx = prisma) {
+  const settings = await getSettings(false, tx);
   const fees = computeFees(input.hammerPrice, settings);
   const shipping = input.shippingCost ?? 0;
 
-  const order = await prisma.order.create({
+  const order = await tx.order.create({
     data: {
       reference: randomReference('AB'),
       listingId: input.listingId,
@@ -46,12 +58,19 @@ export async function createOrderForSale(input: CreateOrderInput) {
     include: { listing: { select: { title: true, slug: true } } },
   });
 
+  return order;
+}
+
+export type SaleOrder = Awaited<ReturnType<typeof createOrderForSale>>;
+
+/** Sent once the sale has committed, never before. */
+export async function announceSale(order: SaleOrder, input: CreateOrderInput): Promise<void> {
   await notify({
     userId: input.buyerId,
     type: 'AUCTION_WON',
     title: 'You won — time to pay',
     body: `${order.listing.title} is yours at ${formatMoney(
-      fees.hammerPrice,
+      order.hammerPrice,
     )}. Total due ${formatMoney(order.total)}.`,
     link: `/account/orders/${order.id}`,
   });
@@ -59,11 +78,9 @@ export async function createOrderForSale(input: CreateOrderInput) {
     userId: input.sellerId,
     type: 'ITEM_SOLD',
     title: 'Your item sold',
-    body: `${order.listing.title} sold for ${formatMoney(fees.hammerPrice)}. Payout ${formatMoney(
-      fees.sellerPayout,
+    body: `${order.listing.title} sold for ${formatMoney(order.hammerPrice)}. Payout ${formatMoney(
+      order.sellerPayout,
     )} after fees.`,
     link: `/account/sales/${order.id}`,
   });
-
-  return order;
 }
