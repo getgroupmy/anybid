@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { Prisma } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 import { checkoutSchema, disputeSchema, reviewSchema, shipOrderSchema } from '@anybid/shared';
 import { prisma } from '../db.ts';
 import { assertNotSuspended, requireAuth } from '../lib/auth.ts';
@@ -13,6 +13,23 @@ const ORDER_INCLUDE = {
   buyer: true,
   seller: true,
 } as const;
+
+/** Past arguing: the money has settled one way or the other. */
+const CLOSED_TO_DISPUTE: OrderStatus[] = [
+  OrderStatus.COMPLETED,
+  OrderStatus.REFUNDED,
+  OrderStatus.CANCELLED,
+];
+
+/**
+ * Everything a dispute may still be raised against, derived from the closed
+ * list rather than written out beside it — two lists that have to stay
+ * complementary drift, and the one that would drift is the one guarding a
+ * payout. DISPUTED is left out because an order can only hold one dispute.
+ */
+const OPEN_TO_DISPUTE: OrderStatus[] = Object.values(OrderStatus).filter(
+  (s) => s !== OrderStatus.DISPUTED && !CLOSED_TO_DISPUTE.includes(s),
+);
 
 async function loadOrderFor(orderId: string, userId: string, isAdmin = false) {
   const order = await prisma.order.findUnique({ where: { id: orderId }, include: ORDER_INCLUDE });
@@ -270,21 +287,40 @@ export async function orderRoutes(app: FastifyInstance) {
     const body = parseBody(req, disputeSchema.omit({ orderId: true }));
     const order = await loadOrderFor(req.params.id, auth.id);
     if (order.buyerId !== auth.id) throw forbidden('Only the buyer can open a dispute');
-    if (['COMPLETED', 'REFUNDED', 'CANCELLED'].includes(order.status)) {
+    if (CLOSED_TO_DISPUTE.includes(order.status)) {
       throw conflict('This order is already closed');
     }
 
-    await prisma.$transaction([
-      prisma.dispute.create({
+    const raised = await prisma.$transaction(async (tx) => {
+      /**
+       * The check above ran before this transaction and cannot see a
+       * confirmation arriving alongside it. That confirmation releases the
+       * seller's payout, and writing DISPUTED over the top of it left an order
+       * an admin could then resolve for the buyer as well — the same sale paid
+       * out twice, once to each side. Re-stating the status here is what stops
+       * it: the second writer matches no row, nothing is written, and the buyer
+       * is told the order moved on.
+       *
+       * The claim comes before the dispute row so a refused one leaves nothing
+       * behind. A second dispute on the same order is refused by the unique on
+       * orderId, which the error handler turns into the same 409.
+       */
+      const claimed = await tx.order.updateMany({
+        where: { id: order.id, status: { in: OPEN_TO_DISPUTE } },
+        data: { status: 'DISPUTED' },
+      });
+      if (claimed.count === 0) return false;
+      await tx.dispute.create({
         data: {
           orderId: order.id,
           openedById: auth.id,
           reason: body.reason,
           detail: body.detail,
         },
-      }),
-      prisma.order.update({ where: { id: order.id }, data: { status: 'DISPUTED' } }),
-    ]);
+      });
+      return true;
+    });
+    if (!raised) throw conflict('This order is no longer open to a dispute');
 
     await notify({
       userId: order.sellerId,
