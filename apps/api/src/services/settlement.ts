@@ -126,13 +126,6 @@ export async function settleListing(listingId: string): Promise<boolean> {
       };
       const order = await createOrderForSale(orderInput, tx);
 
-      if (buyerOrg?.orgId) {
-        await tx.orgMember.update({
-          where: { userId: outcome.winnerId },
-          data: { spentThisMonth: { increment: outcome.salePrice } },
-        });
-      }
-
       await expirePendingApprovals(tx, listing.id);
       return {
         kind: 'sold' as const,

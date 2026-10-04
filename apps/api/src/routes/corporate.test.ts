@@ -85,6 +85,14 @@ after(async () => {
   await prisma.bid.deleteMany({ where: { listingId: { in: made.listings } } });
   await prisma.notification.deleteMany({ where: { userId: { in: made.users } } });
   await prisma.auditLog.deleteMany({ where: { actorId: { in: made.users } } });
+  const orders = await prisma.order.findMany({
+    where: { listingId: { in: made.listings } },
+    select: { id: true },
+  });
+  const orderIds = orders.map((o) => o.id);
+  await prisma.payment.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.invoiceLine.deleteMany({ where: { orderId: { in: orderIds } } });
+  await prisma.order.deleteMany({ where: { id: { in: orderIds } } });
   await prisma.listing.deleteMany({ where: { id: { in: made.listings } } });
   await prisma.orgMember.deleteMany({ where: { orgId: { in: made.orgs } } });
   await prisma.organization.deleteMany({ where: { id: { in: made.orgs } } });
@@ -347,4 +355,82 @@ describe('deciding a bid request two ways at once', () => {
       );
     }
   }
+});
+
+describe('what a seat has spent this month', () => {
+  /** An order against this organisation, dated whenever. */
+  async function makeOrder(orgId: string, buyerId: string, tag: string, createdAt: Date) {
+    const sellerId = await makeUser(`${tag}-seller`);
+    const listing = await prisma.listing.create({
+      data: {
+        slug: `spend-${tag}-${RUN}`,
+        title: `Spend probe ${tag}`,
+        description: 'Fixture.',
+        status: 'SOLD',
+        sellerId,
+        categoryId,
+        startPrice: 100_00,
+        currentPrice: 100_00,
+      },
+      select: { id: true },
+    });
+    made.listings.push(listing.id);
+    await prisma.order.create({
+      data: {
+        reference: `SPEND-${tag}-${RUN}`.toUpperCase().slice(0, 24),
+        listingId: listing.id,
+        buyerId,
+        sellerId,
+        orgId,
+        hammerPrice: 100_00,
+        buyerPremium: 5_00,
+        shippingCost: 20_00,
+        total: 125_00,
+        sellerPayout: 94_00,
+        platformFee: 6_00,
+        paymentFee: 3_64,
+        status: 'COMPLETED',
+        createdAt,
+        dueAt: new Date(createdAt.getTime() + 86_400_000),
+      },
+    });
+  }
+
+  it('counts this month and forgets last month, like the spend report beside it', async () => {
+    // This was a column settlement incremented and nothing ever reset, so a
+    // figure labelled "Spend this month" in the team table held every sale the
+    // member had ever won — and disagreed with the spend report on the same
+    // console, which has always derived it from the month's orders.
+    const orgId = await makeOrg('spend');
+    const owner = await seat(orgId, 'spend', 'OWNER');
+    const lastMonth = new Date(Date.UTC(2026, 0, 15));
+    await makeOrder(orgId, owner.userId, 'old', lastMonth);
+
+    const read = async (url: string) =>
+      JSON.parse(
+        (await app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${owner.token}` } }))
+          .body,
+      );
+
+    let team = await read('/v1/corporate/members');
+    let mine = team.members.find((m: { user: { id: string } }) => m.user.id === owner.userId);
+    assert.equal(
+      mine.spentThisMonth,
+      0,
+      `a sale from ${lastMonth.toISOString().slice(0, 7)} is still counted as this month`,
+    );
+
+    // And a sale this month is counted, at the same total the report uses.
+    await makeOrder(orgId, owner.userId, 'new', new Date());
+    team = await read('/v1/corporate/members');
+    mine = team.members.find((m: { user: { id: string } }) => m.user.id === owner.userId);
+    const report = await read('/v1/corporate/spend');
+    const row = report.rows.find((r: { member: { id: string } }) => r.member.id === owner.userId);
+    assert.equal(mine.spentThisMonth, 125_00, 'this month’s order total must be counted');
+    assert.equal(
+      mine.spentThisMonth,
+      row.spend,
+      'the team table and the spend report must agree on one number',
+    );
+  });
 });

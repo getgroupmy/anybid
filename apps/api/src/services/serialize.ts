@@ -232,14 +232,20 @@ export function organizationDto(o: AnyRow, memberCount = 0, spentThisMonth = 0) 
   };
 }
 
-export function orgMemberDto(m: AnyRow) {
+/**
+ * `spentThisMonth` is passed in, not read off the row. It used to be a column
+ * that settlement incremented and nothing ever reset, so a field labelled "this
+ * month" held every sale the member had ever won. The month's figure is derived
+ * from their orders now, the same way the spend report has always done it.
+ */
+export function orgMemberDto(m: AnyRow, spentThisMonth = 0) {
   return {
     id: m.id,
     user: publicUser(m.user),
     orgRole: m.orgRole,
     approvalThreshold: m.approvalThreshold ?? null,
     active: m.active,
-    spentThisMonth: m.spentThisMonth,
+    spentThisMonth,
     joinedAt: toIso(m.joinedAt),
   };
 }

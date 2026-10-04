@@ -56,6 +56,25 @@ function monthStart(): Date {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 }
 
+/**
+ * What each member of an organisation has spent so far this month, derived from
+ * their orders.
+ *
+ * This used to be a column on the seat that settlement incremented and nothing
+ * ever reset, so the team table's "Spend this month" showed every sale the
+ * member had ever won — and disagreed with the spend report beside it, which
+ * has always derived the figure. One query for the whole team, and the two
+ * numbers now mean the same thing: the total of their orders this month.
+ */
+async function monthSpendByMember(orgId: string): Promise<Map<string, number>> {
+  const rows = await prisma.order.groupBy({
+    by: ['buyerId'],
+    where: { orgId, createdAt: { gte: monthStart() } },
+    _sum: { total: true },
+  });
+  return new Map(rows.map((r) => [r.buyerId, r._sum.total ?? 0]));
+}
+
 export async function corporateRoutes(app: FastifyInstance) {
   app.get('/v1/corporate/organization', async (req) => {
     const auth = requireAuth(req);
@@ -150,12 +169,15 @@ export async function corporateRoutes(app: FastifyInstance) {
   app.get('/v1/corporate/members', async (req) => {
     const auth = requireAuth(req);
     const seat = await mySeat(auth.id);
-    const members = await prisma.orgMember.findMany({
-      where: { orgId: seat.orgId },
-      include: { user: true },
-      orderBy: { joinedAt: 'asc' },
-    });
-    return { members: members.map(orgMemberDto) };
+    const [members, spend] = await Promise.all([
+      prisma.orgMember.findMany({
+        where: { orgId: seat.orgId },
+        include: { user: true },
+        orderBy: { joinedAt: 'asc' },
+      }),
+      monthSpendByMember(seat.orgId),
+    ]);
+    return { members: members.map((m) => orgMemberDto(m, spend.get(m.userId) ?? 0)) };
   });
 
   /**
@@ -216,6 +238,7 @@ export async function corporateRoutes(app: FastifyInstance) {
     });
 
     reply.code(201);
+    // A seat created a moment ago has no orders, so the default of zero holds.
     return { member: orgMemberDto(member), temporaryPassword };
   });
 
@@ -249,7 +272,8 @@ export async function corporateRoutes(app: FastifyInstance) {
       data: body,
       include: { user: true },
     });
-    return { member: orgMemberDto(member) };
+    const spend = await monthSpendByMember(seat.orgId);
+    return { member: orgMemberDto(member, spend.get(member.userId) ?? 0) };
   });
 
   app.delete<{ Params: { id: string } }>('/v1/corporate/members/:id', async (req, reply) => {
