@@ -25,8 +25,16 @@ jobs:
         run: npm run build -w @anybid/shared
       - run: npm run typecheck -w @anybid/mobile
 
-      # Bundling both channels catches an import that only one variant links —
-      # the Huawei build must not pull in anything needing Google Play Services.
+      # What would actually be linked into an Android build. The bundling steps
+      # below cannot answer this: `expo export` produces a JavaScript bundle and
+      # never reaches Gradle, so a native Google Play Services dependency is
+      # invisible to it — which is what this used to rely on. This fails the day
+      # a dependency brings in Maps, FCM or Play location, rather than at
+      # AppGallery review.
+      - name: No unexpected Google Play Services dependency
+        run: npm run check:gms -w @anybid/mobile
+
+      # Bundling both channels catches an import that only one variant resolves.
       - name: Bundle (Play Store channel)
         run: npx expo export --platform android --output-dir /tmp/export-android
         working-directory: apps/mobile
@@ -40,3 +48,7 @@ jobs:
         working-directory: apps/mobile
         env:
           EXPO_PUBLIC_DIST_CHANNEL: huawei
+        # Note this proves the huawei channel's JavaScript resolves, not that
+        # the build is GMS-free. Nothing GMS-bearing may be installed when the
+        # AppGallery APK is built, which `npm run build:huawei` now refuses to
+        # proceed without — see docs/HUAWEI.md.

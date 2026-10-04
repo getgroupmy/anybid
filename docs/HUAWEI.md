@@ -58,11 +58,30 @@ or Firebase reference. The one `firebase` string a search turns up is
 | | `google` (default) | `huawei` |
 |---|---|---|
 | Application id | `my.anybid.app` | `my.anybid.app.huawei` |
-| `expo-notifications` plugin | included | **omitted** |
+| `expo-notifications` config plugin | included | **omitted** |
 | Push transport | Expo push service | Huawei Push Kit |
 | Store | Play Store / App Store | AppGallery |
 
 A separate application id lets both builds sit on one device during testing.
+
+The channel switch does **not** make the build GMS-free. Omitting a config
+plugin only changes what gets written into the generated native project; the
+native module is linked because the package is installed, so autolinking pulls
+FCM in on either channel. Removing the package is the only thing that works —
+`npm run strip:gms` — and `npm run prebuild:huawei` and `npm run build:huawei`
+now refuse to run until nothing GMS-bearing is installed:
+
+```bash
+npm run check:gms -w @anybid/mobile        # is anything unexpected linked?
+npm run check:gms:none -w @anybid/mobile   # is anything at all linked?
+```
+
+Both read what would actually be linked: Expo's autolinking resolution plus
+every package in the app's dependency closure that ships an `android/`
+directory, which is what catches React Native community modules — they link
+through a different mechanism and Expo's resolver does not list them. The first
+form runs in CI on every pull request, so a dependency that drags in Maps, FCM
+or Play location fails the day it lands rather than at AppGallery review.
 
 ## Push notifications
 
@@ -84,6 +103,8 @@ branches on the channel.
 cd apps/mobile
 
 # 1. Remove the FCM-bearing dependency so nothing links Google Play Services.
+#    Steps 2 and 4 refuse to run until this is done; reinstall it when you go
+#    back to the Play build.
 npm run strip:gms
 
 # 2. Generate the native project for the Huawei variant.
@@ -107,7 +128,9 @@ not the AAB the Play profile produces.
 
 ## Verifying a build is GMS-free
 
-After `prebuild`, from `apps/mobile/android`:
+`npm run check:gms:none -w @anybid/mobile` answers this from the dependency
+tree, before a build exists, and is what the huawei scripts run themselves. To
+confirm against the real Gradle graph afterwards, from `apps/mobile/android`:
 
 ```bash
 ./gradlew :app:dependencies --configuration releaseRuntimeClasspath \
