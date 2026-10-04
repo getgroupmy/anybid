@@ -64,7 +64,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     'expo-secure-store',
     // expo-notifications pulls in Firebase Cloud Messaging on Android, which
     // needs Google Play Services. The AppGallery build uses Huawei Push Kit
-    // instead, so the plugin is left out of that variant entirely.
+    // instead, so the plugin is left out of that variant.
+    //
+    // Leaving it out is NOT what keeps GMS out of the Huawei build. A config
+    // plugin only edits the generated native project; the native module is
+    // linked because the package is installed, so autolinking pulls FCM in
+    // either way. Removing the package is the only thing that works, which is
+    // what `npm run strip:gms` does and what `check-gms.mjs --none` — the
+    // precondition on prebuild:huawei and build:huawei — refuses to proceed
+    // without.
     ...(isHuawei ? [] : ['expo-notifications' as const]),
     [
       'expo-image-picker',
