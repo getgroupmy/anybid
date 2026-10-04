@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { API_URL, SESSION_COOKIE } from '@/lib/config';
+import {
+  API_URL,
+  SESSION_COOKIE,
+  accessTokenIsStale,
+  encodeSession,
+  sessionCookieOptions,
+} from '@/lib/config';
 import { readSession } from '@/lib/session';
 import { clientHeaders } from '@/lib/upstream';
 
@@ -26,7 +32,7 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   let accessToken = session?.tokens.accessToken;
   let refreshed: { accessToken: string; refreshToken: string; expiresAt: number } | null = null;
 
-  if (session && session.tokens.expiresAt - 30_000 < Date.now()) {
+  if (session && accessTokenIsStale(session.tokens)) {
     const res = await fetch(`${API_URL}/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...clientHeaders(req) },
@@ -61,14 +67,11 @@ async function handler(req: NextRequest, ctx: { params: Promise<{ path: string[]
   });
 
   if (refreshed && session) {
-    const { encodeSession } = await import('@/lib/session');
-    response.cookies.set(SESSION_COOKIE, encodeSession({ ...session, tokens: refreshed }), {
-      httpOnly: true,
-      sameSite: 'lax',
-      path: '/',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 60 * 60 * 24 * 30,
-    });
+    response.cookies.set(
+      SESSION_COOKIE,
+      encodeSession({ ...session, tokens: refreshed }),
+      sessionCookieOptions(),
+    );
   }
 
   return response;
