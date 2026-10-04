@@ -7,6 +7,7 @@ import {
   type PublicUser,
   type SessionUser,
 } from '@anybid/shared';
+import { listingPseudonym } from '../lib/crypto.ts';
 
 type AnyRow = Record<string, any>;
 
@@ -83,6 +84,9 @@ export function listingSummary(l: AnyRow, viewer?: ViewerContext): ListingSummar
       isLeading: l.leaderId === viewer.userId,
       isSeller: l.sellerId === viewer.userId,
       myMaxBid: myMax,
+      // What to compare the live feed's leaderRef against. Computed per
+      // listing, so it tells the viewer about this auction and nothing else.
+      myRef: listingPseudonym(l.id, viewer.userId),
       requiresApproval: Boolean(
         viewer.approvalThreshold && viewer.approvalThreshold > 0 &&
           l.currentPrice >= viewer.approvalThreshold,

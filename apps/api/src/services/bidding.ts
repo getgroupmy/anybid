@@ -10,6 +10,7 @@ import {
 } from '@anybid/shared';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../db.ts';
+import { listingPseudonym } from '../lib/crypto.ts';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.ts';
 import { hub } from '../realtime/hub.ts';
 import { notify } from './notifications.ts';
@@ -229,7 +230,10 @@ export async function placeBidForUser(
       minimumBid,
       bidCount: after.bidCount,
       leaderMasked: maskHandle(leader?.handle ?? ''),
-      leaderId: after.leaderId ?? '',
+      // A pseudonym, not the leader's user id. This channel is public and
+      // needs no account to join, so an id here named the leading bidder to
+      // every watcher — and /v1/users/:handle turns an id into a real name.
+      leaderRef: after.leaderId ? listingPseudonym(listing.id, after.leaderId) : null,
       reserveMet: result.reserveMet,
       endsAt: endsAtIso,
       at: Date.now(),

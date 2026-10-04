@@ -108,6 +108,27 @@ export function hashToken(token: string): string {
   return createHmac('sha256', env.jwtSecret).update(token).digest('hex');
 }
 
+/**
+ * A bidder's pseudonym on one listing.
+ *
+ * Public auction events have to let a watcher recognise their own bid without
+ * telling every other watcher whose it is. A user id does the first and ruins
+ * the second: /v1/users/:handle resolves an id as readily as a handle, so an
+ * id on a public channel names the bidder outright.
+ *
+ * Keyed, so it cannot be reversed into a user id, and bound to the listing, so
+ * the same person gets a different pseudonym on every auction and the values
+ * cannot be joined across them to build one person's bidding history. 24 hex
+ * characters is 96 bits — far past guessing, and this is compared, never
+ * enumerated.
+ */
+export function listingPseudonym(listingId: string, userId: string): string {
+  return createHmac('sha256', env.jwtSecret)
+    .update(`bidref:${listingId}:${userId}`)
+    .digest('hex')
+    .slice(0, 24);
+}
+
 export function randomReference(prefix: string): string {
   const stamp = Date.now().toString(36).toUpperCase();
   const rand = randomBytes(3).toString('hex').toUpperCase();

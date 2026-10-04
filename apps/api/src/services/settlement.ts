@@ -1,5 +1,6 @@
 import { formatMoney, listingChannel, maskHandle, settleAuction, type AuctionRules, type AuctionState } from '@anybid/shared';
 import { prisma, type Tx } from '../db.ts';
+import { listingPseudonym } from '../lib/crypto.ts';
 import { hub } from '../realtime/hub.ts';
 import { notify } from './notifications.ts';
 import { announceSale, createOrderForSale } from './orders.ts';
@@ -170,7 +171,8 @@ export async function settleListing(listingId: string): Promise<boolean> {
         status: 'SOLD',
         finalPrice: sale.salePrice,
         winnerMasked: maskHandle(winner?.handle ?? ''),
-        winnerId: sale.winnerId,
+        // A pseudonym, not the winner's user id — see the note in bidding.ts.
+        winnerRef: listingPseudonym(listing.id, sale.winnerId),
       },
     });
     await notifyLosers(listing.id, listing.title, listing.slug, sale.winnerId);
@@ -183,7 +185,7 @@ export async function settleListing(listingId: string): Promise<boolean> {
         status: 'UNSOLD',
         finalPrice: listing.currentPrice,
         winnerMasked: null,
-        winnerId: null,
+        winnerRef: null,
       },
     });
     await notify({
