@@ -17,6 +17,7 @@ import {
   verifyPassword,
 } from '../lib/crypto.ts';
 import { conflict, tooManyRequests, unauthorized } from '../lib/errors.ts';
+import { refreshOnce } from '../lib/refresh-grace.ts';
 import {
   accountRetryAfterSec,
   clearAccountFailures,
@@ -202,21 +203,46 @@ export async function authRoutes(app: FastifyInstance) {
 
   app.post('/v1/auth/refresh', { config: { rateLimit: AUTH_LIMITS.refresh } }, async (req) => {
     const body = parseBody(req, refreshSchema);
+    const refreshHash = hashToken(body.refreshToken);
     const session = await prisma.session.findUnique({
-      where: { refreshHash: hashToken(body.refreshToken) },
+      where: { refreshHash },
       select: { id: true, userId: true, expiresAt: true, revokedAt: true },
     });
-    if (!session || session.revokedAt || session.expiresAt < new Date()) {
+    if (!session || session.expiresAt < new Date()) {
       throw unauthorized('Your session has expired — please sign in again');
     }
-    // Rotate: the presented refresh token is burned as the new one is issued.
-    await prisma.session.update({
-      where: { id: session.id },
-      data: { revokedAt: new Date() },
-    });
-    return issueSession(session.userId, {
-      ip: clientIp(req),
-      userAgent: req.headers['user-agent'],
+
+    /**
+     * Rotate: the presented token is burned as the new one is issued, and
+     * exactly one caller may do it.
+     *
+     * The revoked check used to sit above an unconditional update, so every
+     * concurrent request presenting the same token passed it and issued its
+     * own session. Measured: twelve simultaneous refreshes produced twelve
+     * live sessions, each with its own thirty-day refresh token — one of which
+     * the client keeps, the rest invisible to the person they belong to. That
+     * is exactly what rotating is supposed to prevent.
+     *
+     * The callers that lose are usually the same client, though: the website
+     * refreshes inside the last thirty seconds of the access token's life and
+     * every parallel request on the page presents the same cookie. So one of
+     * them does the work and the others wait for its answer, rather than
+     * failing at a moment they did not choose. refreshOnce picks that one;
+     * the conditional claim below is what still holds if this process is
+     * bypassed or a second node appears.
+     */
+    return refreshOnce(refreshHash, async () => {
+      const claimed = await prisma.session.updateMany({
+        where: { id: session.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
+      if (claimed.count === 0) {
+        throw unauthorized('Your session has expired — please sign in again');
+      }
+      return issueSession(session.userId, {
+        ip: clientIp(req),
+        userAgent: req.headers['user-agent'],
+      });
     });
   });
 
