@@ -19,6 +19,7 @@ import { listingChannel, type ServerMessage } from '@anybid/shared';
 import { prisma } from '../db.ts';
 import { listingPseudonym } from '../lib/crypto.ts';
 import { hub, type RealtimeClient } from '../realtime/hub.ts';
+import { sendListingState } from '../realtime/routes.ts';
 import { placeBidForUser } from './bidding.ts';
 import { settleListing } from './settlement.ts';
 import { listingDetail } from './serialize.ts';
@@ -216,5 +217,90 @@ describe('a public listing channel', () => {
       !listingPseudonym(one, bidder.id).includes(bidder.id),
       'and it must not simply contain the id',
     );
+  });
+});
+
+describe('subscribing to a listing channel', () => {
+  it('says where the auction is, rather than waiting for someone else to bid', async () => {
+    // A first page load fetched the listing over HTTP a moment earlier, so the
+    // silence did not show. A reconnect has no such fetch: the socket drops when
+    // a phone sleeps, a network changes, the heartbeat reaps it or the API
+    // restarts, and the client resubscribed and kept showing the price from
+    // before it dropped — with the indicator back on "Live".
+    const seller = await makeUser('snap-seller');
+    const bidder = await makeUser('snap-bidder');
+    const listingId = await makeListing('snap', seller.id);
+    await placeBidForUser({ listingId, bidderId: bidder.id, maxAmount: 150_00 });
+
+    const stored = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { currentPrice: true, bidCount: true },
+    });
+
+    // A client that has just reconnected: subscribed, and told nothing since.
+    const { client, frames } = watcher(null);
+    const accepted = hub.subscribe(client, [listingChannel(listingId)]);
+    await sendListingState(client, accepted);
+    hub.remove(client);
+
+    const snapshot = frames.find((f) => f.t === 'bid');
+    assert.ok(snapshot, 'subscribing must say what the price is');
+    assert.equal(
+      snapshot.payload.currentPrice,
+      stored.currentPrice,
+      'and it must be the price the database holds',
+    );
+    assert.equal(snapshot.payload.bidCount, stored.bidCount);
+    assert.ok(snapshot.payload.minimumBid > stored.currentPrice, 'with a usable minimum');
+  });
+
+  it('does not name the leading bidder in it either', async () => {
+    // The live path is careful about this; a second path that emits the same
+    // event is a second chance to get it wrong.
+    const seller = await makeUser('snap-priv-seller');
+    const bidder = await makeUser('snap-priv-bidder');
+    const listingId = await makeListing('snap-priv', seller.id);
+    await placeBidForUser({ listingId, bidderId: bidder.id, maxAmount: 150_00 });
+
+    const { client, frames } = watcher(null);
+    await sendListingState(client, hub.subscribe(client, [listingChannel(listingId)]));
+    hub.remove(client);
+
+    const serialised = JSON.stringify(frames.find((f) => f.t === 'bid'));
+    assert.ok(
+      !serialised.includes(bidder.id),
+      `the snapshot carried the leading bidder's user id: ${serialised}`,
+    );
+    assert.ok(
+      !serialised.includes(bidder.handle),
+      `the snapshot carried the leading bidder's handle: ${serialised}`,
+    );
+  });
+
+  it('still lets the leading bidder recognise themselves in it', async () => {
+    // Same pseudonym as the live path, or a bidder who reconnects stops being
+    // able to tell that the bid in the lead is their own.
+    const seller = await makeUser('snap-self-seller');
+    const bidder = await makeUser('snap-self-bidder');
+    const listingId = await makeListing('snap-self', seller.id);
+    await placeBidForUser({ listingId, bidderId: bidder.id, maxAmount: 150_00 });
+
+    const { client, frames } = watcher(null);
+    await sendListingState(client, hub.subscribe(client, [listingChannel(listingId)]));
+    hub.remove(client);
+
+    const snapshot = frames.find((f) => f.t === 'bid');
+    assert.equal(
+      snapshot?.payload.leaderRef,
+      listingPseudonym(listingId, bidder.id),
+      'the snapshot must use the same per-listing pseudonym as a live bid',
+    );
+  });
+
+  it('says nothing about channels that are not listings', async () => {
+    const { client, frames } = watcher(null);
+    await sendListingState(client, ['user:someone', 'nonsense']);
+    hub.remove(client);
+    assert.deepEqual(frames, [], `it sent ${JSON.stringify(frames)}`);
   });
 });
