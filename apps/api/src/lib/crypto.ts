@@ -26,6 +26,22 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return derived.length === expected.length && timingSafeEqual(derived, expected);
 }
 
+/**
+ * A real scrypt record over a secret nobody holds.
+ *
+ * Verifying a password costs about 45ms; returning early because the account
+ * does not exist costs about 2ms. That difference is an oracle: one request
+ * tells an attacker whether an email is registered, however identical the
+ * response body is. Sign-in spends this instead of returning early, so both
+ * outcomes cost the same.
+ */
+const absentAccountRecord = hashPassword(randomBytes(32).toString('base64url'));
+
+/** Spends the same time a real verification would, and always fails. */
+export async function burnPasswordVerification(password: string): Promise<void> {
+  await verifyPassword(password, await absentAccountRecord);
+}
+
 /* ---------------- JWT (HS256, self-contained) ---------------- */
 
 interface JwtPayload {

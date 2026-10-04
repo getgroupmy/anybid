@@ -9,6 +9,7 @@ import {
 import { prisma } from '../db.ts';
 import { assertNotSuspended, requireAuth, writeAudit } from '../lib/auth.ts';
 import {
+  burnPasswordVerification,
   hashPassword,
   hashToken,
   newRefreshToken,
@@ -19,6 +20,32 @@ import { conflict, unauthorized } from '../lib/errors.ts';
 import { clientIp, parseBody } from '../lib/http.ts';
 import { env } from '../env.ts';
 import { sessionUser } from '../services/serialize.ts';
+
+/**
+ * Credential endpoints get their own ceilings. The global limit is 600 a
+ * minute and falls back to the client IP when there is no account yet, which
+ * on sign-in is 600 password guesses a minute from one address.
+ *
+ * These are per IP, and deliberately not tight. Malaysian mobile traffic is
+ * heavily carrier-NAT'd, so many genuine users share one apparent address and
+ * a low ceiling would lock them out — the end-to-end smoke test alone signs in
+ * nine times in a few seconds from one address.
+ *
+ * Which means this blunts abuse rather than preventing brute force. The real
+ * fix is per-account: a failed-attempt counter and a cooling-off period on the
+ * User row, so guessing is bounded per victim instead of per source. That is a
+ * schema change with its own trade-off — a hard lock hands an attacker a way
+ * to deny a user their own account — so it is a decision, not a config line.
+ * Worth settling before real money moves through this.
+ */
+const AUTH_LIMITS = {
+  login: { max: 30, timeWindow: '1 minute' },
+  // Account creation is cheap for us and valuable to a spammer.
+  register: { max: 5, timeWindow: '1 minute' },
+  // A refresh token is a 32-byte secret, so this is abuse control rather than
+  // guess prevention; a signed-in app refreshes legitimately and often.
+  refresh: { max: 60, timeWindow: '1 minute' },
+} as const;
 
 const USER_INCLUDE = {
   orgMembership: { include: { org: { select: { name: true } } } },
@@ -79,7 +106,7 @@ async function uniqueHandle(displayName: string): Promise<string> {
 }
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post('/v1/auth/register', async (req, reply) => {
+  app.post('/v1/auth/register', { config: { rateLimit: AUTH_LIMITS.register } }, async (req, reply) => {
     const body = parseBody(req, registerSchema);
 
     const existing = await prisma.user.findUnique({ where: { email: body.email } });
@@ -125,14 +152,22 @@ export async function authRoutes(app: FastifyInstance) {
     return issueSession(user.id, { ip: clientIp(req), userAgent: req.headers['user-agent'] });
   });
 
-  app.post('/v1/auth/login', async (req) => {
+  app.post('/v1/auth/login', { config: { rateLimit: AUTH_LIMITS.login } }, async (req) => {
     const body = parseBody(req, loginSchema);
     const user = await prisma.user.findUnique({
       where: { email: body.email },
       select: { id: true, passwordHash: true, suspended: true, suspendedReason: true },
     });
-    // Same failure for unknown email and wrong password — no account enumeration.
-    if (!user || !(await verifyPassword(body.password, user.passwordHash))) {
+
+    // Unknown email and wrong password must fail identically, in wording and in
+    // how long they take. Returning early for an unknown email would skip
+    // scrypt and answer in a couple of milliseconds instead of forty-odd,
+    // which is a usable oracle on its own.
+    if (!user) {
+      await burnPasswordVerification(body.password);
+      throw unauthorized('Email or password is incorrect');
+    }
+    if (!(await verifyPassword(body.password, user.passwordHash))) {
       throw unauthorized('Email or password is incorrect');
     }
     await assertNotSuspended(user.id);
@@ -140,7 +175,7 @@ export async function authRoutes(app: FastifyInstance) {
     return issueSession(user.id, { ip: clientIp(req), userAgent: req.headers['user-agent'] });
   });
 
-  app.post('/v1/auth/refresh', async (req) => {
+  app.post('/v1/auth/refresh', { config: { rateLimit: AUTH_LIMITS.refresh } }, async (req) => {
     const body = parseBody(req, refreshSchema);
     const session = await prisma.session.findUnique({
       where: { refreshHash: hashToken(body.refreshToken) },
