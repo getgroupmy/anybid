@@ -6,6 +6,7 @@ import {
   decodeSession,
   encodeSession,
   sessionCookieOptions,
+  REFRESH_TIMEOUT_MS,
 } from '@/lib/config';
 
 /**
@@ -45,11 +46,20 @@ export async function middleware(req: NextRequest) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ refreshToken: session.tokens.refreshToken }),
       cache: 'no-store',
+      // This runs in front of every page, so it must not be able to hold one
+      // open. `fetch` rejects when a connection fails but waits for ever on a
+      // connection that is accepted and never answered — an API that is slow
+      // rather than down — and without a bound that stalls the whole site for
+      // every signed-in visitor, which is worse than the stale token this is
+      // here to replace. A refresh takes milliseconds; anything near this is
+      // already broken.
+      signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
     });
     if (res.ok) tokens = ((await res.json()) as { tokens: typeof session.tokens }).tokens;
   } catch {
-    // The API is unreachable. Leaving the cookie alone is right: the visitor's
-    // session is not over, our side is down, and the pages will say so.
+    // Unreachable, or too slow to wait for. Leaving the cookie alone is right
+    // either way: the visitor's session is not over, our side is struggling,
+    // and the page will say so rather than signing them out over it.
     return NextResponse.next();
   }
 

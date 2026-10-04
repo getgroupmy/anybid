@@ -1,5 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { API_URL, SESSION_COOKIE, encodeSession, sessionCookieOptions } from '@/lib/config';
+import {
+  API_TIMEOUT_MS,
+  API_URL,
+  SESSION_COOKIE,
+  encodeSession,
+  sessionCookieOptions,
+} from '@/lib/config';
 import { clientHeaders } from '@/lib/upstream';
 
 export async function POST(req: NextRequest) {
@@ -12,6 +18,9 @@ export async function POST(req: NextRequest) {
       headers: { 'content-type': 'application/json', ...clientHeaders(req) },
       body,
       cache: 'no-store',
+      // Its catch already answers 503; without this it could wait for ever on
+      // an API that accepts the connection and never replies.
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
   } catch (error) {
     // The marketplace service is unreachable from the server. This is ours,

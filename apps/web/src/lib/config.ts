@@ -50,6 +50,30 @@ export function sessionCookieOptions() {
 }
 
 /**
+ * How long a server-side call to the API may take before it is abandoned.
+ *
+ * `fetch` rejects when a connection fails, but waits for ever on one that is
+ * accepted and never answered — an API that is slow rather than down. Every
+ * page here is server-rendered and the root layout fetches the category bar on
+ * all of them, under a comment saying the site still renders if the API is
+ * down. That was only true of "down": measured against an API that accepts and
+ * never replies, a page with no data of its own took 20 seconds and returned
+ * nothing, because the await never settled and the catch around it never ran.
+ *
+ * With a bound, not answering becomes an error, and the handling that was
+ * already written for a dead API covers a struggling one too.
+ */
+export const API_TIMEOUT_MS = 5_000;
+
+/**
+ * The bound on a refresh specifically, which is a single row lookup and a token
+ * signature. It is shorter than the one above because a refresh is never the
+ * thing a visitor is waiting for — it happens on the way to something else, so
+ * its bound adds to that request's rather than replacing it.
+ */
+export const REFRESH_TIMEOUT_MS = 2_500;
+
+/**
  * Refreshing is worth doing slightly early: a token that expires while the
  * request is still in flight is as useless as one that already had.
  */
