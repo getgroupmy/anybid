@@ -283,6 +283,37 @@ describe('fees', () => {
     assert.equal(computeFees(5_00).sellerCommission, 1_00);
     assert.equal(computeFees(100_000_00).sellerCommission, 500_00);
   });
+
+  it('accounts for every sen the buyer pays, at any price', () => {
+    // What the buyer hands over is exactly what the seller receives, plus what
+    // the platform keeps, plus what the processor takes. Nothing appears and
+    // nothing vanishes.
+    //
+    // This used to fail under the commission floor. At a one sen hammer price
+    // the floor made the commission a ringgit, the payout clamped to zero, and
+    // the platform still booked the whole ringgit — so the breakdown accounted
+    // for 100 sen of a 1 sen sale. Reachable by default: minCommission is
+    // RM1.00 and a starting price only has to be above zero.
+    for (const hammer of [1, 2, 50, 99, 1_00, 1_01, 5_00, 100_00, 1_000_00, 100_000_00]) {
+      const f = computeFees(hammer, DEFAULT_FEES);
+      assert.equal(
+        f.sellerPayout + f.platformRevenue + f.paymentFee,
+        f.buyerTotal,
+        `fees do not reconcile at ${hammer} sen`,
+      );
+      assert.ok(f.sellerCommission <= hammer, `commission exceeded the sale at ${hammer} sen`);
+      assert.ok(f.sellerPayout >= 0, `negative payout at ${hammer} sen`);
+    }
+  });
+
+  it('never charges more commission than the item sold for', () => {
+    const f = computeFees(1, DEFAULT_FEES);
+    assert.equal(f.sellerCommission, 1, 'the floor must not overtake the sale price');
+    assert.equal(f.sellerPayout, 0);
+    // And it says so rather than pretending otherwise: a sale this small does
+    // not cover the processor's flat fee, so the platform is out of pocket.
+    assert.ok(f.platformRevenue < 0, 'a sale below the flat payment fee is a loss');
+  });
 });
 
 describe('roles', () => {
