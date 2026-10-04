@@ -57,6 +57,11 @@ POSTGRES_PASSWORD=$pgpass
 DATABASE_URL=postgresql://anybid:$pgpass@postgres:5432/anybid?schema=public
 CORS_ORIGINS=https://anybid.my,https://www.anybid.my
 
+# Rebuild the demo marketplace every three hours. DESTRUCTIVE: this truncates
+# every table and re-seeds, so every account, listing and order is lost each
+# time. Set it to 0 the moment this deployment holds data anyone cares about.
+DEMO_RESET_INTERVAL_MS=10800000
+
 # Set this same value as PROXY_SHARED_SECRET in the website's Vercel project.
 # It is how the API knows a claimed visitor address came from our own website
 # and not from the visitor. Until both sides have it the API ignores the claim
