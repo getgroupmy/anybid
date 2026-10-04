@@ -1,10 +1,12 @@
 /**
- * The invariants that only break when two things happen at once.
+ * The invariants that only break when two things happen at once, or when
+ * something fails halfway through.
  *
- * Each of these is load-bearing and silent when it fails: no error is raised,
- * the data is simply wrong afterwards. The auction engine's own tests cannot
- * catch them because the engine is pure — the bugs live in how the services
- * read, lock and write around it. So these run against a real PostgreSQL.
+ * Each of these is load-bearing and silent when it fails: no error reaches a
+ * user, the data is simply wrong afterwards. The auction engine's own tests
+ * cannot catch them because the engine is pure — the bugs live in how the
+ * services read, lock and write around it. So these run against a real
+ * PostgreSQL.
  *
  * Requires DATABASE_URL to point at a migrated database. `npm run db:up &&
  * npm run db:migrate` locally; CI provides one as a service container.
@@ -262,6 +264,62 @@ describe('the corporate approval gate', () => {
       'a decided approval must not be replayable',
     );
     assert.equal(await prisma.bid.count({ where: { listingId } }), 1);
+  });
+});
+
+describe('closing an auction is all-or-nothing', () => {
+  it('does not leave a listing sold with no order when the order cannot be written', async () => {
+    const sellerId = await makeUser('atomic-seller');
+    const buyerId = await makeUser('atomic-buyer');
+    const listingId = await makeListing({
+      sellerId,
+      categoryId,
+      startPrice: 300_00,
+      tag: 'atomic',
+    });
+
+    await placeBidForUser({ listingId, bidderId: buyerId, maxAmount: 400_00 });
+
+    // Make writing the order fail, and nothing else. Pointing the winner at an
+    // id with no User row trips the order's foreign key at exactly the moment
+    // the sale is recorded. The trigger is synthetic; the failure is not — a
+    // dropped connection or a worker restarted mid-close lands in the same
+    // place, and the compose stack restarts the worker on every deploy.
+    const past = new Date(Date.now() - HOUR);
+    await prisma.listing.update({
+      where: { id: listingId },
+      data: { endsAt: past, originalEndsAt: past, leaderId: 'user-that-does-not-exist' },
+    });
+
+    await assert.rejects(
+      () => settleListing(listingId),
+      'the order write must fail for this test to mean anything',
+    );
+
+    const listing = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { status: true, closedAt: true },
+    });
+    const orders = await prisma.order.count({ where: { listingId } });
+
+    // The whole point. If the claim committed on its own, the listing is now
+    // SOLD for ever with nothing to pay: settleDueAuctions only looks at LIVE
+    // listings and the conditional claim rejects a second attempt, so no
+    // worker will ever come back to it. The seller is not paid, the winner has
+    // no order, and the only trace is one line in a log.
+    assert.equal(orders, 0, 'no order was written, which is the premise');
+    assert.equal(
+      listing.status,
+      'LIVE',
+      'the listing must still be closeable — a sale that failed to record must roll back, not strand',
+    );
+    assert.equal(listing.closedAt, null, 'nothing was closed, so nothing may be stamped closed');
+
+    // And once the cause is gone it settles normally, which is what rolling
+    // back buys: a retry that works.
+    await prisma.listing.update({ where: { id: listingId }, data: { leaderId: buyerId } });
+    assert.equal(await settleListing(listingId), true, 'the retry must succeed');
+    assert.equal(await prisma.order.count({ where: { listingId } }), 1);
   });
 });
 

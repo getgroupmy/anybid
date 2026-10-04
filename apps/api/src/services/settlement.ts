@@ -1,8 +1,8 @@
 import { formatMoney, listingChannel, maskHandle, settleAuction, type AuctionRules, type AuctionState } from '@anybid/shared';
-import { prisma } from '../db.ts';
+import { prisma, type Tx } from '../db.ts';
 import { hub } from '../realtime/hub.ts';
 import { notify } from './notifications.ts';
-import { createOrderForSale } from './orders.ts';
+import { announceSale, createOrderForSale } from './orders.ts';
 
 /**
  * Closes auctions whose clock has run out.
@@ -76,47 +76,90 @@ export async function settleListing(listingId: string): Promise<boolean> {
   const outcome = settleAuction(rules, state);
   const nextStatus = outcome.result === 'SOLD' ? 'SOLD' : 'UNSOLD';
 
-  // Claim the listing — only the worker that flips LIVE -> closed proceeds.
-  const claimed = await prisma.listing.updateMany({
-    where: { id: listing.id, status: 'LIVE' },
-    data: { status: nextStatus, closedAt: new Date() },
-  });
-  if (claimed.count === 0) return false;
-
-  if (outcome.result === 'SOLD') {
-    await prisma.bid.updateMany({
-      where: { listingId: listing.id, bidderId: outcome.winnerId, status: 'ACTIVE' },
-      data: { status: 'WON' },
+  /**
+   * Closing a listing is one transaction, not four.
+   *
+   * The claim, the bid statuses, the order and the buyer's org spend used to
+   * commit separately. Anything failing after the claim — a dropped
+   * connection, a worker restarted mid-close, a constraint — left the listing
+   * SOLD with no order, and nothing ever retried it: settleDueAuctions only
+   * selects LIVE listings and the conditional claim rejects a second attempt.
+   * The seller went unpaid, the winner had a WON bid and nothing to pay, and
+   * the only trace was a line in a log. Rolling back instead leaves the
+   * listing LIVE, which the next tick picks up.
+   *
+   * Notifications and socket traffic stay outside, below: they must not fire
+   * for a sale that did not commit.
+   */
+  const sale = await prisma.$transaction(async (tx) => {
+    // Only the worker that flips LIVE -> closed proceeds.
+    const claimed = await tx.listing.updateMany({
+      where: { id: listing.id, status: 'LIVE' },
+      data: { status: nextStatus, closedAt: new Date() },
     });
-    await prisma.bid.updateMany({
-      where: { listingId: listing.id, bidderId: { not: outcome.winnerId }, status: { in: ['ACTIVE', 'OUTBID'] } },
-      data: { status: 'LOST' },
-    });
+    if (claimed.count === 0) return null;
 
-    const buyerOrg = await prisma.orgMember.findUnique({
-      where: { userId: outcome.winnerId },
-      select: { orgId: true, org: { select: { paymentTerms: true } } },
-    });
-
-    await createOrderForSale({
-      listingId: listing.id,
-      buyerId: outcome.winnerId,
-      sellerId: listing.sellerId,
-      hammerPrice: outcome.salePrice,
-      shippingCost: listing.shippingCost,
-      orgId: buyerOrg?.orgId ?? null,
-      invoiced: Boolean(buyerOrg && buyerOrg.org.paymentTerms !== 'PREPAID'),
-    });
-
-    if (buyerOrg?.orgId) {
-      await prisma.orgMember.update({
-        where: { userId: outcome.winnerId },
-        data: { spentThisMonth: { increment: outcome.salePrice } },
+    if (outcome.result === 'SOLD') {
+      await tx.bid.updateMany({
+        where: { listingId: listing.id, bidderId: outcome.winnerId, status: 'ACTIVE' },
+        data: { status: 'WON' },
       });
+      await tx.bid.updateMany({
+        where: { listingId: listing.id, bidderId: { not: outcome.winnerId }, status: { in: ['ACTIVE', 'OUTBID'] } },
+        data: { status: 'LOST' },
+      });
+
+      const buyerOrg = await tx.orgMember.findUnique({
+        where: { userId: outcome.winnerId },
+        select: { orgId: true, org: { select: { paymentTerms: true } } },
+      });
+
+      const orderInput = {
+        listingId: listing.id,
+        buyerId: outcome.winnerId,
+        sellerId: listing.sellerId,
+        hammerPrice: outcome.salePrice,
+        shippingCost: listing.shippingCost,
+        orgId: buyerOrg?.orgId ?? null,
+        invoiced: Boolean(buyerOrg && buyerOrg.org.paymentTerms !== 'PREPAID'),
+      };
+      const order = await createOrderForSale(orderInput, tx);
+
+      if (buyerOrg?.orgId) {
+        await tx.orgMember.update({
+          where: { userId: outcome.winnerId },
+          data: { spentThisMonth: { increment: outcome.salePrice } },
+        });
+      }
+
+      await expirePendingApprovals(tx, listing.id);
+      return {
+        kind: 'sold' as const,
+        order,
+        orderInput,
+        winnerId: outcome.winnerId,
+        salePrice: outcome.salePrice,
+      };
     }
 
+    await tx.bid.updateMany({
+      where: { listingId: listing.id, status: { in: ['ACTIVE', 'OUTBID'] } },
+      data: { status: 'LOST' },
+    });
+    await expirePendingApprovals(tx, listing.id);
+    return { kind: 'unsold' as const };
+  });
+
+  // Another worker got there first.
+  if (!sale) return false;
+
+  // Branching on what committed, not on what the engine decided, so the two
+  // cannot drift apart without the compiler noticing.
+  if (sale.kind === 'sold') {
+    await announceSale(sale.order, sale.orderInput);
+
     const winner = await prisma.user.findUnique({
-      where: { id: outcome.winnerId },
+      where: { id: sale.winnerId },
       select: { handle: true },
     });
     hub.publish(listingChannel(listing.id), {
@@ -125,17 +168,13 @@ export async function settleListing(listingId: string): Promise<boolean> {
       payload: {
         listingId: listing.id,
         status: 'SOLD',
-        finalPrice: outcome.salePrice,
+        finalPrice: sale.salePrice,
         winnerMasked: maskHandle(winner?.handle ?? ''),
-        winnerId: outcome.winnerId,
+        winnerId: sale.winnerId,
       },
     });
-    await notifyLosers(listing.id, listing.title, listing.slug, outcome.winnerId);
+    await notifyLosers(listing.id, listing.title, listing.slug, sale.winnerId);
   } else {
-    await prisma.bid.updateMany({
-      where: { listingId: listing.id, status: { in: ['ACTIVE', 'OUTBID'] } },
-      data: { status: 'LOST' },
-    });
     hub.publish(listingChannel(listing.id), {
       t: 'closed',
       channel: listingChannel(listing.id),
@@ -170,13 +209,15 @@ export async function settleListing(listingId: string): Promise<boolean> {
     }
   }
 
-  // Expire any corporate approvals still pending on a closed listing.
-  await prisma.approvalRequest.updateMany({
-    where: { listingId: listing.id, status: 'PENDING' },
+  return true;
+}
+
+/** Corporate approvals still pending on a listing that just closed. */
+async function expirePendingApprovals(tx: Tx, listingId: string): Promise<void> {
+  await tx.approvalRequest.updateMany({
+    where: { listingId, status: 'PENDING' },
     data: { status: 'EXPIRED' },
   });
-
-  return true;
 }
 
 async function notifyLosers(

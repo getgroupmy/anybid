@@ -1,5 +1,5 @@
 import { DEFAULT_FEES, type FeeSchedule } from '@anybid/shared';
-import { prisma } from '../db.ts';
+import { prisma, type Tx } from '../db.ts';
 
 export interface PlatformSettings extends FeeSchedule {
   defaultAntiSnipeWindowSec: number;
@@ -21,9 +21,15 @@ const CACHE_TTL_MS = 10_000;
 
 let cache: { value: PlatformSettings; at: number } | null = null;
 
-export async function getSettings(force = false): Promise<PlatformSettings> {
+/**
+ * `client` matters when this is reached from inside a transaction: reading on
+ * the global client would take a second connection from the pool while the
+ * first is still held, which under enough concurrent sales is a deadlock on
+ * the pool rather than on any row.
+ */
+export async function getSettings(force = false, client: Tx = prisma): Promise<PlatformSettings> {
   if (!force && cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.value;
-  const row = await prisma.platformSetting.findUnique({ where: { key: SETTINGS_KEY } });
+  const row = await client.platformSetting.findUnique({ where: { key: SETTINGS_KEY } });
   const value = { ...DEFAULT_SETTINGS, ...((row?.value as object) ?? {}) } as PlatformSettings;
   cache = { value, at: Date.now() };
   return value;
