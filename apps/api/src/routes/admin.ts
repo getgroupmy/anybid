@@ -28,6 +28,13 @@ import {
   sessionUser,
 } from '../services/serialize.ts';
 
+/**
+ * An auction that has reached one of these is finished. Nothing may move it
+ * back to LIVE: the settlement worker takes any LIVE listing whose end time
+ * has passed, so reopening a closed one sells it a second time.
+ */
+const CLOSED_LISTING_STATUSES = ['ENDED', 'SOLD', 'UNSOLD', 'CANCELLED'] as const;
+
 const PAID_STATUSES: Prisma.OrderWhereInput['status'] = {
   in: ['PAID', 'AWAITING_SHIPMENT', 'SHIPPED', 'DELIVERED', 'COMPLETED'],
 };
@@ -337,6 +344,25 @@ export async function adminRoutes(app: FastifyInstance) {
     const data: Prisma.ListingUpdateInput = { moderationNote: body.reason ?? null };
     switch (body.action) {
       case 'APPROVE':
+        /**
+         * An auction that has closed cannot be reopened.
+         *
+         * This decided the new status from the start time alone, with no
+         * regard for what the listing currently was — so approving a sold
+         * auction set it back to LIVE. A closed listing still carries its
+         * price, its leader and an end time in the past, and the settlement
+         * worker looks for exactly one thing: a LIVE listing whose end time
+         * has passed. So it sold again.
+         *
+         * Measured: one auction produced two orders, charging the winner
+         * RM800 for a RM400 item and paying the seller twice. A mis-click in
+         * the moderation queue was enough.
+         */
+        if ((CLOSED_LISTING_STATUSES as readonly string[]).includes(listing.status)) {
+          throw conflict(
+            'This auction has already closed — approving it would put it back on the block',
+          );
+        }
         data.status = listing.startsAt > new Date() ? 'SCHEDULED' : 'LIVE';
         break;
       case 'SUSPEND':
@@ -356,7 +382,25 @@ export async function adminRoutes(app: FastifyInstance) {
         break;
     }
 
-    await prisma.listing.update({ where: { id: listing.id }, data });
+    /**
+     * The three actions that move the status claim the status they were
+     * decided against, so an auction that closed while the admin was looking
+     * at the queue cannot be written over — which is the same reopening by a
+     * narrower route. Featuring does not depend on the status, so it is not
+     * made to fail when an auction ends mid-review.
+     */
+    if (body.action === 'APPROVE' || body.action === 'SUSPEND' || body.action === 'CANCEL') {
+      const applied = await prisma.listing.updateMany({
+        where: { id: listing.id, status: listing.status },
+        data,
+      });
+      if (applied.count === 0) {
+        throw conflict('This listing changed while you were reviewing it — take another look');
+      }
+    } else {
+      await prisma.listing.update({ where: { id: listing.id }, data });
+    }
+
     if (body.action === 'SUSPEND' || body.action === 'CANCEL') {
       await notify({
         userId: listing.sellerId,
