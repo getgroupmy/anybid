@@ -199,3 +199,98 @@ describe('resolving a dispute', () => {
     assert.equal(await balanceOf(buyerId), 100_00);
   });
 });
+
+/**
+ * The verification path, which is how the marketplace decides who to trust.
+ *
+ * Approving a KYC submission sets `verified` on a user, and that badge is what
+ * a buyer reads before sending money to a stranger. Every other admin
+ * decision in this file leaves a row in the audit log — roles, suspension,
+ * listing moderation, campaign decisions, dispute resolution, settings — so
+ * that "who approved this seller?" has an answer after something goes wrong.
+ */
+describe('identity verification', () => {
+  function tokenFor(userId: string): string {
+    return signAccessToken({ sub: userId, roles: ['USER'], orgId: null, orgRole: null }).token;
+  }
+
+  const submission = {
+    docType: 'NRIC' as const,
+    docNumber: '900101015432',
+    docFrontUrl: 'https://example.invalid/front.jpg',
+  };
+
+  it('takes one submission from one person, not one per request', async () => {
+    const userId = await makeUser('kyc-dup');
+    const token = tokenFor(userId);
+
+    const codes = (
+      await Promise.all(
+        Array.from({ length: 6 }, () =>
+          app.inject({
+            method: 'POST',
+            url: '/v1/me/kyc',
+            headers: { authorization: `Bearer ${token}` },
+            payload: submission,
+          }),
+        ),
+      )
+    ).map((r) => r.statusCode);
+
+    const pending = await prisma.kycSubmission.count({
+      where: { userId, status: 'PENDING' },
+    });
+    // The guard reads for a pending submission and the create does not
+    // re-check, so requests arriving together all pass it. Each extra row is
+    // another identity document stored, and another thing in the reviewer's
+    // queue for the same person.
+    assert.equal(
+      pending,
+      1,
+      `one person has ${pending} verifications in review (responses ${codes.join(', ')})`,
+    );
+    assert.deepEqual(
+      codes.filter((c) => c === 201).length,
+      1,
+      'exactly one request should have been accepted',
+    );
+  });
+
+  it('records who decided a verification', async () => {
+    const userId = await makeUser('kyc-audit');
+    const created = await app.inject({
+      method: 'POST',
+      url: '/v1/me/kyc',
+      headers: { authorization: `Bearer ${tokenFor(userId)}` },
+      payload: submission,
+    });
+    assert.equal(created.statusCode, 201, created.body);
+    const { submission: row } = created.json() as { submission: { id: string } };
+
+    const decided = await app.inject({
+      method: 'POST',
+      url: `/v1/admin/kyc/${row.id}/decide`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { decision: 'APPROVE', note: 'Looks right.' },
+    });
+    assert.equal(decided.statusCode, 204, decided.body);
+
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      select: { verified: true, kycStatus: true },
+    });
+    assert.equal(user.verified, true, 'the approval should have taken effect');
+
+    const trail = await prisma.auditLog.findMany({
+      where: { targetType: 'kyc', targetId: row.id },
+      select: { action: true, actorId: true },
+    });
+    assert.equal(
+      trail.length,
+      1,
+      'approving a seller is the decision most likely to be questioned later, ' +
+        'and it was the one admin decision leaving no trace',
+    );
+    assert.match(trail[0]!.action, /^kyc\./);
+  });
+});
