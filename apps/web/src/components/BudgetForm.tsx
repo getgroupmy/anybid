@@ -3,10 +3,16 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { browserClient } from '@/lib/client';
-import { moneyInputToMinor } from '@/lib/format';
+import { formatMoney, moneyInputToMinor } from '@/lib/format';
 
-const TERMS = ['PREPAID', 'NET_7', 'NET_14', 'NET_30', 'NET_60'] as const;
-
+/**
+ * Your own spending policy, and what the platform has extended to you.
+ *
+ * The credit limit and the payment terms used to be fields on this form. They
+ * decide whether this organisation can take goods now and pay later, and for
+ * how much — the platform's exposure rather than the customer's preference —
+ * so they are set on the admin side and shown here as facts.
+ */
 export function BudgetForm({
   monthlyBudget,
   defaultApprovalThreshold,
@@ -34,8 +40,6 @@ export function BudgetForm({
       await browserClient.corporate.updateBudget({
         monthlyBudget: moneyInputToMinor(String(form.get('monthlyBudget'))),
         defaultApprovalThreshold: moneyInputToMinor(String(form.get('defaultApprovalThreshold'))),
-        creditLimit: moneyInputToMinor(String(form.get('creditLimit'))),
-        paymentTerms: String(form.get('paymentTerms')),
       });
       setSaved(true);
       router.refresh();
@@ -74,29 +78,20 @@ export function BudgetForm({
         </div>
 
         <div>
-          <span className="label">Credit limit (RM)</span>
-          <input
-            name="creditLimit"
-            className="input"
-            inputMode="decimal"
-            defaultValue={(creditLimit / 100).toFixed(2)}
-          />
+          <span className="label">Credit limit</span>
+          <p className="input bg-ink-50 text-ink-700">{formatMoney(creditLimit)}</p>
           <p className="mt-1 text-xs text-ink-500">
-            Ceiling on unpaid invoices before purchases must be prepaid.
+            Ceiling on unpaid invoices before purchases must be prepaid. Set by AnyBid — talk to
+            us to review it.
           </p>
         </div>
 
         <div>
           <span className="label">Payment terms</span>
-          <select name="paymentTerms" className="input" defaultValue={paymentTerms}>
-            {TERMS.map((t) => (
-              <option key={t} value={t}>
-                {t.replace('_', ' ')}
-              </option>
-            ))}
-          </select>
+          <p className="input bg-ink-50 text-ink-700">{paymentTerms.replace('_', ' ')}</p>
           <p className="mt-1 text-xs text-ink-500">
-            Anything other than prepaid lets buyers check out against an invoice.
+            Anything other than prepaid lets buyers check out against an invoice. Agreed with
+            AnyBid, not changed here.
           </p>
         </div>
       </div>

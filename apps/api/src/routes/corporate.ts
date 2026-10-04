@@ -111,6 +111,16 @@ export async function corporateRoutes(app: FastifyInstance) {
     const auth = requireAuth(req);
     const seat = await mySeat(auth.id);
     assertManages(seat);
+    /**
+     * The monthly budget and the default approval threshold only.
+     *
+     * This used to take the whole of orgBudgetSchema, which also carried
+     * creditLimit and paymentTerms — so an organisation could put itself on
+     * NET_60 terms and raise its own credit ceiling, which is the whole of
+     * "take the goods now, settle later, for as much as you like". Measured
+     * at RM1,000,000 of self-granted credit. Those two are the platform's
+     * exposure and now live on the admin side.
+     */
     const body = parseBody(req, orgBudgetSchema.partial());
 
     const org = await prisma.organization.update({ where: { id: seat.orgId }, data: body });
@@ -214,6 +224,16 @@ export async function corporateRoutes(app: FastifyInstance) {
     if (target.orgRole === 'OWNER' && seat.orgRole !== 'OWNER') {
       throw forbidden('Only an owner can change another owner');
     }
+    /**
+     * The check above refuses changing an existing owner but said nothing
+     * about becoming one, and an admin may edit their own seat — so an admin
+     * could set their own role to OWNER and take the organisation: an owner
+     * cannot be removed and can demote or deactivate anyone, including the
+     * person who founded it. Succession stays possible, from an owner.
+     */
+    if (body.orgRole === 'OWNER' && seat.orgRole !== 'OWNER') {
+      throw forbidden('Only an owner can appoint another owner');
+    }
 
     const member = await prisma.orgMember.update({
       where: { id: target.id },
@@ -294,14 +314,29 @@ export async function corporateRoutes(app: FastifyInstance) {
     }
 
     if (body.decision === 'REJECT') {
-      const rejected = await prisma.approvalRequest.update({
-        where: { id: approval.id },
+      /**
+       * Claimed, not written over.
+       *
+       * The status check above happens before this write and this write did
+       * not re-check it, so a rejection could land on top of an approval that
+       * had already placed the bid on the live auction — the record reading
+       * "declined" while the organisation was committed to the bid and the
+       * auction had moved. Two approvers working the same queue is all it
+       * takes. The approve path already claims the request this way.
+       */
+      const claimed = await prisma.approvalRequest.updateMany({
+        where: { id: approval.id, status: 'PENDING' },
         data: {
           status: 'REJECTED',
           decidedById: auth.id,
           decidedAt: new Date(),
           note: body.note ?? null,
         },
+      });
+      if (claimed.count === 0) throw conflict('This request has already been decided');
+
+      const rejected = await prisma.approvalRequest.findUniqueOrThrow({
+        where: { id: approval.id },
         include: { listing: true, requestedBy: true, decidedBy: true },
       });
       await notify({

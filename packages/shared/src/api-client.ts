@@ -310,6 +310,9 @@ export class AnyBidClient {
     users: (query?: Query) => this.get<Paginated<SessionUser>>('/v1/admin/users', query),
     setRoles: (id: string, roles: string[]) => this.post<void>(`/v1/admin/users/${id}/roles`, { roles }),
     suspend: (id: string, body: unknown) => this.post<void>(`/v1/admin/users/${id}/suspend`, body),
+    /** Credit limit and payment terms — the platform's exposure, not the customer's to set. */
+    setOrgCredit: (id: string, body: unknown) =>
+      this.patch<{ organization: Organization }>(`/v1/admin/organizations/${id}/credit`, body),
     listings: (query?: Query) => this.get<Paginated<ListingSummary>>('/v1/admin/listings', query),
     moderate: (id: string, body: unknown) => this.post<void>(`/v1/admin/listings/${id}/moderate`, body),
     campaigns: (query?: Query) => this.get<Paginated<Campaign>>('/v1/admin/campaigns', query),
