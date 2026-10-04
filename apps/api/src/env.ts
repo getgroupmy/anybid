@@ -48,6 +48,15 @@ export const env = {
   accessTtlSec: Number(process.env.JWT_ACCESS_TTL ?? 900),
   refreshTtlSec: Number(process.env.JWT_REFRESH_TTL ?? 2_592_000),
   publicApiUrl: process.env.PUBLIC_API_URL ?? 'http://localhost:4000',
+  /**
+   * The commit this build came from, baked in by the Dockerfile.
+   *
+   * So a deploy can be verified instead of assumed. A release pipeline's
+   * green tick says the deploy command returned, not that the running
+   * process is the commit it was asked to run — a build that failed to
+   * replace the container leaves the previous one serving, healthily.
+   */
+  commit: process.env.GIT_COMMIT || 'unknown',
   currency: process.env.PLATFORM_CURRENCY ?? 'MYR',
   settlementTickMs: Number(process.env.SETTLEMENT_TICK_MS ?? 5000),
   corsOrigins: (process.env.CORS_ORIGINS ?? '*').split(',').map((s) => s.trim()),

@@ -69,6 +69,11 @@ x-api-image: &api-image
   build:
     context: .
     dockerfile: apps/api/Dockerfile
+    args:
+      # Set by the CI deploy so /health can be checked against the commit that
+      # was meant to go live. Unset for a hand deploy, which is honest rather
+      # than wrong: /health then says "unknown".
+      GIT_COMMIT: ${GIT_COMMIT:-}
   restart: unless-stopped
 
 services:
