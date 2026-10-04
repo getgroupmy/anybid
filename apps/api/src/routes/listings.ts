@@ -23,11 +23,12 @@ const LISTING_INCLUDE = {
 } as const;
 
 /**
- * A seller may edit a listing while it is still theirs to withdraw. A closed
- * one is the record of what was sold, and a SUSPENDED one is an admin
- * decision the seller must not edit their way out of.
+ * A listing still the seller's to change: to edit, and to withdraw.
+ *
+ * A closed one is the record of what was sold, and a SUSPENDED one is an admin
+ * decision the seller must not act their way out of.
  */
-const EDITABLE_STATUSES = ['DRAFT', 'PENDING_REVIEW', 'SCHEDULED', 'LIVE'] as const;
+const OPEN_STATUSES = ['DRAFT', 'PENDING_REVIEW', 'SCHEDULED', 'LIVE'] as const;
 
 /** Fields a bidder relied on, so they stop being the seller's to change. */
 const FROZEN_ONCE_BID = {
@@ -272,7 +273,7 @@ export async function listingRoutes(app: FastifyInstance) {
     });
     if (!existing) throw notFound('Listing');
     if (existing.sellerId !== auth.id) throw forbidden('This is not your listing');
-    if (!(EDITABLE_STATUSES as readonly string[]).includes(existing.status)) {
+    if (!(OPEN_STATUSES as readonly string[]).includes(existing.status)) {
       throw conflict('A listing that is no longer open cannot be edited');
     }
 
@@ -312,7 +313,7 @@ export async function listingRoutes(app: FastifyInstance) {
           select: { bidCount: true, status: true },
         });
         if (!locked) throw notFound('Listing');
-        if (!(EDITABLE_STATUSES as readonly string[]).includes(locked.status)) {
+        if (!(OPEN_STATUSES as readonly string[]).includes(locked.status)) {
           throw conflict('A listing that is no longer open cannot be edited');
         }
         if (locked.bidCount > 0) {
@@ -324,7 +325,7 @@ export async function listingRoutes(app: FastifyInstance) {
       // Nothing here is a term of the sale, so it needs no lock — only the
       // status re-check, in case the auction closed a moment ago.
       const applied = await prisma.listing.updateMany({
-        where: { id: req.params.id, sellerId: auth.id, status: { in: [...EDITABLE_STATUSES] } },
+        where: { id: req.params.id, sellerId: auth.id, status: { in: [...OPEN_STATUSES] } },
         data,
       });
       if (applied.count === 0) throw conflict('A listing that is no longer open cannot be edited');
@@ -363,14 +364,47 @@ export async function listingRoutes(app: FastifyInstance) {
     });
     if (!existing) throw notFound('Listing');
     if (existing.sellerId !== auth.id) throw forbidden('This is not your listing');
-    if (existing.bidCount > 0) {
-      throw conflict('An auction with bids cannot be cancelled — contact support');
-    }
+    /**
+     * Withdrawn only while it is still open, and still unbid, both re-checked
+     * under the lock the bid path holds.
+     *
+     * The bid count was read before an unconditional write, so a bid arriving
+     * in between was cancelled out from under: measured, an auction with one
+     * bid cancelled anyway on a 200, leaving the bidder with a live bid on a
+     * withdrawn listing that will never settle — which is the exact thing the
+     * guard exists to prevent.
+     *
+     * And there was no status check, which a buy-now sale walks straight
+     * through: buying outright leaves bidCount at zero, so "no bids" was true
+     * of a listing that had already sold. Measured, a sold listing cancelled
+     * with its order still standing against it.
+     */
+    const listing = await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Listing" WHERE id = ${req.params.id} FOR UPDATE`;
+      const locked = await tx.listing.findUnique({
+        where: { id: req.params.id },
+        select: { bidCount: true, status: true },
+      });
+      if (!locked) throw notFound('Listing');
+      if (!(OPEN_STATUSES as readonly string[]).includes(locked.status)) {
+        throw conflict(
+          locked.status === 'SOLD'
+            ? 'This listing has already sold and cannot be withdrawn'
+            : 'This listing is no longer open, so there is nothing to withdraw',
+        );
+      }
+      if (locked.bidCount > 0) {
+        throw conflict('An auction with bids cannot be cancelled — contact support');
+      }
 
-    const listing = await prisma.listing.update({
-      where: { id: req.params.id },
-      data: { status: 'CANCELLED', closedAt: new Date() },
-      include: LISTING_INCLUDE,
+      await tx.listing.update({
+        where: { id: req.params.id },
+        data: { status: 'CANCELLED', closedAt: new Date() },
+      });
+      return tx.listing.findUniqueOrThrow({
+        where: { id: req.params.id },
+        include: LISTING_INCLUDE,
+      });
     });
     await writeAudit({
       actorId: auth.id,
