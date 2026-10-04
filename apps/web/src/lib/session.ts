@@ -33,14 +33,12 @@ export async function serverClient(): Promise<AnyBidClient> {
   return new AnyBidClient({
     baseUrl: API_URL,
     token: session?.tokens.accessToken ?? null,
-    // Bounded: an API that accepts a connection and never answers would
-    // otherwise hold the render open indefinitely. A caller's own signal wins.
-    fetchImpl: (input, init) =>
-      fetch(input, {
-        signal: AbortSignal.timeout(API_TIMEOUT_MS),
-        ...init,
-        cache: 'no-store',
-      }),
+    // Tighter than the client's default, because a page render cannot wait as
+    // long as a person watching a spinner will. Set as the option rather than a
+    // signal inside fetchImpl: the client sets its own signal on the request,
+    // and whichever of the two is spread last would silently win.
+    timeoutMs: API_TIMEOUT_MS,
+    fetchImpl: (input, init) => fetch(input, { ...init, cache: 'no-store' }),
   });
 }
 

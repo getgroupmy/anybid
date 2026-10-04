@@ -31,14 +31,22 @@ export interface TokenStore {
 }
 
 export class ApiError extends Error {
-  constructor(
-    override readonly message: string,
-    readonly statusCode: number,
-    readonly code: string,
-    readonly details?: unknown,
-  ) {
+  readonly statusCode: number;
+  readonly code: string;
+  readonly details?: unknown;
+
+  /**
+   * The fields are assigned rather than declared as constructor parameters.
+   * Parameter properties are not type annotations, so they cannot be stripped,
+   * and this package's own tests run under `node --experimental-strip-types` —
+   * which meant nothing could import this file, and the client went untested.
+   */
+  constructor(message: string, statusCode: number, code: string, details?: unknown) {
     super(message);
     this.name = 'ApiError';
+    this.statusCode = statusCode;
+    this.code = code;
+    this.details = details;
   }
   get isAuth() {
     return this.statusCode === 401 || this.statusCode === 403;
@@ -62,7 +70,24 @@ export interface ApiClientOptions {
   token?: string | null;
   fetchImpl?: typeof fetch;
   onUnauthorized?: () => void;
+  /**
+   * How long a request may take before it is abandoned, in milliseconds.
+   *
+   * `fetch` rejects when a connection fails, but waits for ever on one that is
+   * accepted and never answered — an API that is slow rather than down. Without
+   * a bound the app sits on a spinner with no error and nothing to retry, and a
+   * server render holds its request open.
+   *
+   * The default suits a phone on a mobile network, where a slow round trip is
+   * normal and being too eager is its own failure. A caller with a tighter
+   * budget says so: the website's server-side client allows five seconds,
+   * because a page render cannot wait as long as a person with a spinner will.
+   */
+  timeoutMs?: number;
 }
+
+/** Generous, because the usual caller is a phone on mobile data. */
+export const DEFAULT_TIMEOUT_MS = 15_000;
 
 type Query = Record<string, string | number | boolean | undefined | null | string[]>;
 
@@ -72,6 +97,7 @@ export class AnyBidClient {
   private readonly staticToken?: string | null;
   private readonly doFetch: typeof fetch;
   private readonly onUnauthorized?: () => void;
+  private readonly timeoutMs: number;
   private refreshing: Promise<Tokens | null> | null = null;
 
   constructor(opts: ApiClientOptions) {
@@ -80,6 +106,15 @@ export class AnyBidClient {
     this.staticToken = opts.token;
     this.doFetch = opts.fetchImpl ?? globalThis.fetch.bind(globalThis);
     this.onUnauthorized = opts.onUnauthorized;
+    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * The bound, unless the caller brought its own signal — an aborted render or
+   * a cancelled search should still win.
+   */
+  private signalFor(init: RequestInit): AbortSignal {
+    return init.signal ?? AbortSignal.timeout(this.timeoutMs);
   }
 
   private qs(query?: Query): string {
@@ -113,6 +148,7 @@ export class AnyBidClient {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ refreshToken }),
+          signal: AbortSignal.timeout(this.timeoutMs),
         });
         if (!res.ok) {
           await this.store?.set(null);
@@ -143,7 +179,11 @@ export class AnyBidClient {
     };
     if (auth) Object.assign(headers, await this.authHeader());
 
-    const res = await this.doFetch(`${this.baseUrl}${path}${this.qs(query)}`, { ...rest, headers });
+    const res = await this.doFetch(`${this.baseUrl}${path}${this.qs(query)}`, {
+      ...rest,
+      headers,
+      signal: this.signalFor(rest),
+    });
 
     if (res.status === 204) return undefined as T;
 
