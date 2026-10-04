@@ -10,6 +10,7 @@ import { after, before, describe, it } from 'node:test';
 import { prisma } from '../db.ts';
 import { hashPassword, signAccessToken } from '../lib/crypto.ts';
 import { buildServer } from '../server.ts';
+import { settleListing } from '../services/settlement.ts';
 
 const RUN = randomBytes(4).toString('hex');
 const TOTAL = 500_00;
@@ -292,5 +293,182 @@ describe('identity verification', () => {
         'and it was the one admin decision leaving no trace',
     );
     assert.match(trail[0]!.action, /^kyc\./);
+  });
+});
+
+/**
+ * Moderating a listing that is no longer open for moderation.
+ *
+ * APPROVE decides the new status from the start time alone, with no regard for
+ * what the listing currently is. A closed auction still has its price, its
+ * leader and an end time in the past, and settlement looks for exactly one
+ * thing: a LIVE listing whose end time has passed. So putting a sold listing
+ * back to LIVE hands it to the settlement worker a second time.
+ */
+describe('moderating a listing that has already closed', () => {
+  async function soldListingWithOrder(tag: string) {
+    const sellerId = await makeUser(`${tag}-seller`);
+    const buyerId = await makeUser(`${tag}-buyer`);
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    const listing = await prisma.listing.create({
+      data: {
+        slug: `${tag}-${RUN}`,
+        title: `Moderation probe ${tag}`,
+        description: 'Fixture for the closed-listing moderation suite.',
+        status: 'SOLD',
+        sellerId,
+        categoryId,
+        startPrice: 100_00,
+        currentPrice: 400_00,
+        leaderId: buyerId,
+        leaderMax: 400_00,
+        bidCount: 1,
+        endsAt: past,
+        originalEndsAt: past,
+        closedAt: new Date(),
+      },
+      select: { id: true },
+    });
+    made.listings.push(listing.id);
+
+    const order = await prisma.order.create({
+      data: {
+        reference: `MOD-${tag}-${RUN}`.toUpperCase().slice(0, 24),
+        listingId: listing.id,
+        buyerId,
+        sellerId,
+        hammerPrice: 400_00,
+        buyerPremium: 0,
+        shippingCost: 0,
+        total: 400_00,
+        sellerPayout: 376_00,
+        platformFee: 24_00,
+        paymentFee: 0,
+        status: 'AWAITING_PAYMENT',
+        dueAt: new Date(Date.now() + 86_400_000),
+      },
+      select: { id: true },
+    });
+    return { listingId: listing.id, orderId: order.id, buyerId, sellerId };
+  }
+
+  it('does not put a sold auction back on the block', async () => {
+    const { listingId } = await soldListingWithOrder('approve');
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/admin/listings/${listingId}/moderate`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { action: 'APPROVE', reason: 'Mis-clicked in the queue.' },
+    });
+
+    const listing = await prisma.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: { status: true },
+    });
+    assert.equal(
+      listing.status,
+      'SOLD',
+      `a sold auction was moved to ${listing.status} (response ${res.statusCode})`,
+    );
+  });
+
+  it('does not let one auction be settled and charged twice', async () => {
+    const { listingId, buyerId } = await soldListingWithOrder('resettle');
+
+    await app.inject({
+      method: 'POST',
+      url: `/v1/admin/listings/${listingId}/moderate`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { action: 'APPROVE' },
+    });
+
+    // Whatever the route did, the worker must not find a second sale here.
+    // This is the consequence that costs someone money: a duplicate order for
+    // one auction means the winner owes twice and the seller is paid twice.
+    await settleListing(listingId);
+
+    const orders = await prisma.order.findMany({
+      where: { listingId },
+      select: { id: true, total: true, buyerId: true },
+    });
+    assert.equal(
+      orders.length,
+      1,
+      `one auction produced ${orders.length} orders, charging the winner ` +
+        `${orders.reduce((sum, o) => sum + o.total, 0)} sen in total`,
+    );
+    assert.equal(orders[0]!.buyerId, buyerId);
+  });
+
+  it('still lets an admin suspend or feature a closed listing', async () => {
+    // Taking a sold listing down, or off the front page, stays sensible — the
+    // fix must not make a closed listing untouchable.
+    const { listingId } = await soldListingWithOrder('suspend');
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/admin/listings/${listingId}/moderate`,
+      headers: { authorization: `Bearer ${adminToken}` },
+      payload: { action: 'UNFEATURE' },
+    });
+    assert.equal(res.statusCode, 204, res.body);
+  });
+});
+
+describe('moderating a listing that closes mid-review', () => {
+  it('refuses the decision rather than writing over what happened', async () => {
+    const sellerId = await makeUser('midreview-seller');
+    const buyerId = await makeUser('midreview-buyer');
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    const listing = await prisma.listing.create({
+      data: {
+        slug: `midreview-${RUN}`,
+        title: `Mid-review probe ${RUN}`,
+        description: 'Fixture for the stale-moderation check.',
+        status: 'LIVE',
+        sellerId,
+        categoryId,
+        startPrice: 100_00,
+        currentPrice: 400_00,
+        leaderId: buyerId,
+        leaderMax: 400_00,
+        bidCount: 1,
+        endsAt: past,
+        originalEndsAt: past,
+      },
+      select: { id: true },
+    });
+    made.listings.push(listing.id);
+
+    // The admin's read says LIVE. Between that and the write, the auction
+    // closes — which is the same reopening as before, by a narrower route.
+    // Holding the row makes the ordering certain instead of lucky.
+    let pending: Promise<Awaited<ReturnType<typeof app.inject>>> | undefined;
+    await prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "Listing" WHERE id = ${listing.id} FOR UPDATE`;
+      pending = app.inject({
+        method: 'POST',
+        url: `/v1/admin/listings/${listing.id}/moderate`,
+        headers: { authorization: `Bearer ${adminToken}` },
+        payload: { action: 'APPROVE' },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await tx.listing.update({
+        where: { id: listing.id },
+        data: { status: 'SOLD', closedAt: new Date() },
+      });
+    });
+
+    const res = await (pending as Promise<Awaited<ReturnType<typeof app.inject>>>);
+    const after = await prisma.listing.findUniqueOrThrow({
+      where: { id: listing.id },
+      select: { status: true },
+    });
+    assert.equal(
+      after.status,
+      'SOLD',
+      `the auction closed and the stale approval put it back to ${after.status} (response ${res.statusCode})`,
+    );
+    assert.equal(res.statusCode, 409);
   });
 });
