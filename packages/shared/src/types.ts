@@ -95,7 +95,8 @@ export interface BidSummary {
   amount: Money;
   createdAt: string;
   status: 'ACTIVE' | 'OUTBID' | 'WON' | 'LOST' | 'RETRACTED' | 'PENDING_APPROVAL';
-  bidder: { id: string; masked: string; avatarUrl: string | null };
+  /** Deliberately no id: see the note in the API's bidSummary. */
+  bidder: { masked: string; avatarUrl: string | null };
   isAuto: boolean;
 }
 
