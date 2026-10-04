@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { API_URL, SESSION_COOKIE } from '@/lib/config';
 import { encodeSession } from '@/lib/session';
+import { clientHeaders } from '@/lib/upstream';
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
@@ -9,7 +10,7 @@ export async function POST(req: NextRequest) {
   try {
     upstream = await fetch(`${API_URL}/v1/auth/login`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...clientHeaders(req) },
       body,
       cache: 'no-store',
     });

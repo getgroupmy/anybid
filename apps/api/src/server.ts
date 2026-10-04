@@ -10,7 +10,7 @@ import { env } from './env.ts';
 import { prisma } from './db.ts';
 import { attachAuth } from './lib/auth.ts';
 import { badRequest, HttpError } from './lib/errors.ts';
-import { redactUrl } from './lib/http.ts';
+import { clientIp, redactUrl } from './lib/http.ts';
 import { MAX_IMAGE_BYTES, MAX_IMAGES_PER_UPLOAD } from './lib/images.ts';
 import { hub } from './realtime/hub.ts';
 import { realtimeRoutes } from './realtime/routes.ts';
@@ -48,7 +48,17 @@ export async function buildServer() {
         },
       },
     },
-    trustProxy: true,
+    /**
+     * Bounded, not `true`. With `true` Fastify believes any X-Forwarded-For,
+     * which made the client IP a request parameter and every per-IP limit
+     * optional — measured at eight registrations through a limit of five.
+     *
+     * `hop` counts outward from the server, so hop 0 is whoever actually
+     * connected. Trusting the nearest `trustProxyHops` of them means req.ip
+     * becomes the entry our own reverse proxy appended, and anything a caller
+     * put further to the left is ignored.
+     */
+    trustProxy: (_address: string, hop: number) => hop < env.trustProxyHops,
     bodyLimit: 2 * 1024 * 1024,
   });
 
@@ -61,7 +71,7 @@ export async function buildServer() {
     max: 600,
     timeWindow: '1 minute',
     // Bidding is the hot path; rate limit per account, falling back to IP.
-    keyGenerator: (req) => (req as { auth?: { id: string } }).auth?.id ?? req.ip,
+    keyGenerator: (req) => (req as { auth?: { id: string } }).auth?.id ?? clientIp(req) ?? req.ip,
   });
 
   await app.register(websocket, {
@@ -94,6 +104,8 @@ export async function buildServer() {
 
   app.setErrorHandler((error, req, reply) => {
     if (error instanceof HttpError) {
+      const retryAfter = (error.details as { retryAfterSec?: number } | undefined)?.retryAfterSec;
+      if (typeof retryAfter === 'number') reply.header('retry-after', String(retryAfter));
       return reply.code(error.statusCode).send(error.toJSON());
     }
     if (error instanceof ZodError) {

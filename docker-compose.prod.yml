@@ -14,6 +14,7 @@
 #
 #        API_DOMAIN=api.anybid.my
 #        JWT_SECRET=<64 random hex characters>
+#        PROXY_SHARED_SECRET=<64 random hex characters, same value in Vercel>
 #        POSTGRES_PASSWORD=<a long random password>
 #        DATABASE_URL=postgresql://anybid:<same password>@postgres:5432/anybid?schema=public
 #        CORS_ORIGINS=https://anybid.my,https://www.anybid.my
@@ -47,6 +48,14 @@ x-api-env: &api-env
   PUBLIC_API_URL: https://${API_DOMAIN:?set API_DOMAIN in .env.prod}
   CORS_ORIGINS: ${CORS_ORIGINS:-https://anybid.my,https://www.anybid.my}
   PLATFORM_CURRENCY: ${PLATFORM_CURRENCY:-MYR}
+  # Caddy is the only hop in front of the API, so one. This is what makes
+  # req.ip the address Caddy saw rather than whatever the caller claimed.
+  TRUST_PROXY_HOPS: ${TRUST_PROXY_HOPS:-1}
+  # Shared with the website, the only caller allowed to state a visitor's
+  # address — browser traffic arrives via Vercel, so Caddy can only vouch for
+  # Vercel. Empty means the API ignores such claims and keys every web visitor
+  # on Vercel's address instead: safe, but coarse.
+  PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:-}
   # Cloudflare R2 holds listing photos. Leave these empty and the API still
   # runs — the upload endpoint answers 503 and the rest of the site works.
   R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
