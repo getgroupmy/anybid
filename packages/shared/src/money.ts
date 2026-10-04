@@ -43,6 +43,29 @@ export function parseMoneyInput(value: string, currency: CurrencyCode = 'MYR'): 
   return Math.round(n * CURRENCY[currency].minorUnits);
 }
 
+/**
+ * The money fields in a payload that were typed but could not be read.
+ *
+ * NaN is deliberately not a value, but it must not be sent either, and not
+ * because the API would catch it: `JSON.stringify` turns NaN into `null`, and
+ * `null` is how a reserve, a buy-now price, a total budget and an approval
+ * threshold all say "there isn't one". So an unreadable reserve would arrive as
+ * no reserve and be accepted — the silent removal this is meant to stop,
+ * wearing a different hat.
+ *
+ * Returns one message per offending field, shaped like the API's own field
+ * errors so a form renders it the same way. Shared because both the website and
+ * the app need it, and this codebase has already learned what happens when a
+ * money helper gets copied instead.
+ */
+export function unreadableMoney(payload: Record<string, unknown>): Record<string, string> {
+  const errors: Record<string, string> = {};
+  for (const [field, value] of Object.entries(payload)) {
+    if (typeof value === 'number' && Number.isNaN(value)) errors[field] = 'Enter an amount';
+  }
+  return errors;
+}
+
 export function toMajor(minor: Money, currency: CurrencyCode = 'MYR'): number {
   return minor / CURRENCY[currency].minorUnits;
 }

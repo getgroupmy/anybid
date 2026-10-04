@@ -1,6 +1,12 @@
-import { formatMoney, formatMoneyCompact, parseMoneyInput, type Money } from '@anybid/shared';
+import {
+  formatMoney,
+  formatMoneyCompact,
+  parseMoneyInput,
+  unreadableMoney,
+  type Money,
+} from '@anybid/shared';
 
-export { formatMoney, formatMoneyCompact };
+export { formatMoney, formatMoneyCompact, unreadableMoney };
 
 export function relativeTime(iso: string | Date | null | undefined): string {
   if (!iso) return '—';
@@ -88,26 +94,4 @@ export function statusTone(status: string): string {
     default:
       return 'bg-ink-100 text-ink-700';
   }
-}
-
-/**
- * The money fields in a payload that were typed but could not be read.
- *
- * `moneyInputToMinor` answers NaN for text that is not an amount, which is
- * deliberately not a value — but it must not be sent either, and not because
- * the API would catch it. `JSON.stringify` turns NaN into `null`, and `null` is
- * how a reserve, a buy-now price, a total budget and an approval threshold all
- * say "there isn't one". So an unreadable reserve would arrive as no reserve
- * and be accepted, which is the silent removal this is here to stop, wearing a
- * different hat.
- *
- * So the form checks before it sends. Returns one message per offending field,
- * shaped like the API's own field errors so it renders the same way.
- */
-export function unreadableMoney(payload: Record<string, unknown>): Record<string, string> {
-  const errors: Record<string, string> = {};
-  for (const [field, value] of Object.entries(payload)) {
-    if (typeof value === 'number' && Number.isNaN(value)) errors[field] = 'Enter an amount';
-  }
-  return errors;
 }

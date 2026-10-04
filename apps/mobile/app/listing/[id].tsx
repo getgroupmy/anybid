@@ -153,6 +153,12 @@ export default function ListingScreen() {
       router.push('/auth/sign-in');
       return;
     }
+    // Checked before the comparison below, because NaN < anything is false —
+    // an unreadable amount would sail past a minimum-bid check.
+    if (!Number.isFinite(maxAmount)) {
+      setBidError('That is not an amount — enter what you are willing to pay.');
+      return;
+    }
     if (maxAmount < live!.minimumBid) {
       setBidError(`The minimum bid is ${formatMoney(live!.minimumBid)}`);
       return;

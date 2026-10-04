@@ -1,4 +1,12 @@
-export { formatMoney, formatMoneyCompact, formatCountdown, msRemaining } from '@anybid/shared';
+import { parseMoneyInput } from '@anybid/shared';
+
+export {
+  formatMoney,
+  formatMoneyCompact,
+  formatCountdown,
+  msRemaining,
+  unreadableMoney,
+} from '@anybid/shared';
 
 export function relativeTime(iso: string | null | undefined): string {
   if (!iso) return '—';
@@ -21,7 +29,15 @@ export function dateTime(iso: string | null | undefined): string {
   });
 }
 
+/**
+ * What the user typed, in sen — or NaN if it is not an amount.
+ *
+ * This was the third copy of this parser in the repository, all three of them
+ * answering 0 for text they could not read, and zero is how the codebase spells
+ * "none": a reserve of zero is no reserve. So letters in the reserve box
+ * removed a seller's floor, silently. It delegates to the shared one now, so
+ * there is one answer to this question rather than three.
+ */
 export function moneyInputToMinor(value: string): number {
-  const n = Number(value.replace(/[^0-9.]/g, ''));
-  return Number.isFinite(n) ? Math.round(n * 100) : 0;
+  return parseMoneyInput(value) ?? Number.NaN;
 }
